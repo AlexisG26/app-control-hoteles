@@ -1,0 +1,74 @@
+name: API (pruebas y Cloudflare)
+
+on:
+  push:
+    branches: [main]
+    paths: ["worker/**", ".github/workflows/deploy-api.yml"]
+  pull_request:
+    paths: ["worker/**", "web/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Pruebas de la API
+        working-directory: worker
+        run: node --experimental-sqlite --test test/api.test.mjs
+      - name: Revisión de sintaxis de la app
+        run: node --check web/app.js && node --check web/sw.js
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Completar configuración
+        working-directory: worker
+        env:
+          D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+          PAGES_ORIGIN: ${{ vars.PAGES_ORIGIN }}
+          VAPID_SUBJECT: ${{ vars.VAPID_SUBJECT }}
+        run: |
+          for v in D1_DATABASE_ID PAGES_ORIGIN; do
+            if [ -z "${!v}" ]; then echo "::error::Falta la variable $v en el repositorio."; exit 1; fi
+          done
+          host="${PAGES_ORIGIN#https://}"
+          sed -i "s|REEMPLAZAR_CON_ID_DE_D1|$D1_DATABASE_ID|" wrangler.toml
+          sed -i "s|https://TU-USUARIO.github.io|$PAGES_ORIGIN|" wrangler.toml
+          sed -i "s|RP_ID = \"TU-USUARIO.github.io\"|RP_ID = \"$host\"|" wrangler.toml
+          if [ -n "$VAPID_SUBJECT" ]; then sed -i "s|mailto:TU-CORREO@ejemplo.com|$VAPID_SUBJECT|" wrangler.toml; fi
+          grep -E "database_id|ALLOWED_ORIGIN|RP_ID" wrangler.toml
+
+      - name: Migrar base de datos y publicar el Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          secrets: |
+            OWNER_EMAIL
+            AUTH_PEPPER
+            RESEND_API_KEY
+            MAIL_FROM
+            VAPID_PUBLIC_KEY
+            VAPID_PRIVATE_JWK
+          command: |
+            d1 migrations apply control-hoteles --remote
+            deploy
+        env:
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          AUTH_PEPPER: ${{ secrets.AUTH_PEPPER }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_JWK: ${{ secrets.VAPID_PRIVATE_JWK }}

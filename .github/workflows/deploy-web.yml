@@ -1,0 +1,44 @@
+name: Publicar app (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", ".github/workflows/deploy-web.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar dirección de la API
+        env:
+          API_URL: ${{ vars.API_URL }}
+        run: |
+          if [ -z "$API_URL" ]; then
+            echo "::error::Falta la variable API_URL (Settings → Secrets and variables → Actions → Variables)."
+            exit 1
+          fi
+          printf "self.APP_CONFIG = { API_URL: '%s' };\n" "$API_URL" > web/config.js
+          # Nueva versión del service worker en cada publicación, para que los teléfonos se actualicen.
+          sed -i "s/const VERSION = 'v1';/const VERSION = '${GITHUB_SHA::8}';/" web/sw.js
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deployment
+        uses: actions/deploy-pages@v4

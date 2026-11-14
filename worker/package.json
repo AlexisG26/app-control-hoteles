@@ -1,0 +1,17 @@
+{
+  "name": "control-hoteles-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "API de Control de Hoteles en Cloudflare Workers + D1",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply control-hoteles --local",
+    "migrate:remote": "wrangler d1 migrations apply control-hoteles --remote",
+    "test": "node --experimental-sqlite --test test/api.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^3.80.0"
+  }
+}
