@@ -399,6 +399,32 @@ test('tarifas por tipo, empresa de crédito e impuestos incluidos', async () => 
   assert.equal(ph.rates.Triple, null);
 });
 
+test('código de acceso generado por gerencia, sin correo', async () => {
+  const u = (await api('POST', '/api/users', { token: owner, body: { email: 'andrea@example.com', name: 'Andrea', memberships: [{ hotel_id: 'prokinto', role: 'recepcion' }] } })).data;
+  // Solo gerencia puede generarlo
+  assert.equal((await api('POST', `/api/users/${u.id}/access-code`, { token: conta })).status, 403);
+  const c = await api('POST', `/api/users/${u.id}/access-code`, { token: owner });
+  assert.equal(c.status, 200);
+  assert.match(c.data.code, /^\d{6}$/);
+  assert.equal(c.data.expires_in_hours, 24);
+  const v = await api('POST', '/api/auth/verify', { body: { email: 'Andrea@Example.com', code: c.data.code } });
+  assert.equal(v.status, 200, JSON.stringify(v.data));
+  assert.equal((await api('GET', '/api/me', { token: v.data.token })).data.user.name, 'Andrea');
+  // Un solo uso
+  assert.equal((await api('POST', '/api/auth/verify', { body: { email: 'andrea@example.com', code: c.data.code } })).status, 400);
+  // Si el envío por correo falla, el código de gerencia no se pierde
+  const c2 = await api('POST', `/api/users/${u.id}/access-code`, { token: owner });
+  await env.DB.prepare('UPDATE email_codes SET last_sent_at = ? WHERE email = ?').bind(Date.now() - 60000, 'andrea@example.com').run();
+  const saved = { dev: env.DEV_MODE, key: env.RESEND_API_KEY };
+  env.DEV_MODE = '0'; env.RESEND_API_KEY = 're_test';
+  const realFetch2 = globalThis.fetch;
+  globalThis.fetch = async (url, init) => (String(url).includes('resend.com') ? new Response('{"message":"testing mode"}', { status: 403 }) : realFetch2(url, init));
+  const sent = await api('POST', '/api/auth/code', { body: { email: 'andrea@example.com' } });
+  globalThis.fetch = realFetch2; env.DEV_MODE = saved.dev; env.RESEND_API_KEY = saved.key;
+  assert.equal(sent.status, 502);
+  assert.equal((await api('POST', '/api/auth/verify', { body: { email: 'andrea@example.com', code: c2.data.code } })).status, 200);
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });

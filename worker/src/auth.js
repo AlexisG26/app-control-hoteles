@@ -109,13 +109,31 @@ export async function sendLoginCode(env, emailRaw) {
   if (prev && Date.now() - prev.last_sent_at < 45000) throw new HttpError(429, 'Espera unos segundos antes de pedir otro código.');
 
   const code = randomCode();
-  await env.DB.prepare(`INSERT INTO email_codes (email, code_hash, expires_at, attempts, last_sent_at) VALUES (?,?,?,0,?)
-     ON CONFLICT(email) DO UPDATE SET code_hash=excluded.code_hash, expires_at=excluded.expires_at, attempts=0, last_sent_at=excluded.last_sent_at`)
-    .bind(email, await hashToken(code, env.AUTH_PEPPER), Date.now() + CODE_MINUTES * 60000, Date.now()).run();
-
+  // Primero se envía y solo si salió se guarda: así un correo fallido no borra un código de acceso entregado por gerencia.
   await deliverCode(env, email, code);
+  await storeCode(env, email, code, CODE_MINUTES * 60000);
   if (env.DEV_MODE === '1') generic.devCode = code; // solo en desarrollo local
   return generic;
+}
+
+async function storeCode(env, email, code, ttlMs) {
+  await env.DB.prepare(`INSERT INTO email_codes (email, code_hash, expires_at, attempts, last_sent_at) VALUES (?,?,?,0,?)
+     ON CONFLICT(email) DO UPDATE SET code_hash=excluded.code_hash, expires_at=excluded.expires_at, attempts=0, last_sent_at=excluded.last_sent_at`)
+    .bind(email, await hashToken(code, env.AUTH_PEPPER), Date.now() + ttlMs, Date.now()).run();
+}
+
+/**
+ * Código de acceso generado por gerencia (sin correo): de un solo uso, vence en 24 horas.
+ * Gerencia se lo entrega a la persona por WhatsApp; ella entra con su correo y ese código.
+ */
+export const ACCESS_CODE_HOURS = 24;
+export async function createAccessCode(env, userId) {
+  const u = await env.DB.prepare('SELECT email, active FROM users WHERE id = ?').bind(Number(userId)).first();
+  if (!u) throw new HttpError(404, 'Usuario no encontrado.');
+  if (!u.active) throw bad('El usuario está desactivado. Reactívalo primero.');
+  const code = randomCode();
+  await storeCode(env, u.email, code, ACCESS_CODE_HOURS * 3600000);
+  return { email: u.email, code, expires_in_hours: ACCESS_CODE_HOURS };
 }
 
 async function deliverCode(env, email, code) {

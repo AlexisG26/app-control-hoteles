@@ -1,7 +1,7 @@
 // Control de Hoteles · API (Cloudflare Worker)
 import { HttpError, json, body, bad, notFound, randomToken, hashToken, localDate, cleanStr } from './util.js';
 import {
-  requireUser, createSession, sendLoginCode, verifyLoginCode, requireOwner, hotelsOf, rolesIn, ROLES,
+  requireUser, createSession, sendLoginCode, verifyLoginCode, createAccessCode, requireOwner, hotelsOf, rolesIn, ROLES,
   passkeyRegisterOptions, passkeyRegister, passkeyLoginOptions, passkeyLogin,
 } from './auth.js';
 import {
@@ -204,6 +204,13 @@ async function setMemberships(env, userId, list) {
     await env.DB.prepare('INSERT OR IGNORE INTO memberships (user_id, hotel_id, role) VALUES (?,?,?)').bind(userId, m.hotel_id, m.role).run();
   }
 }
+
+on('POST', '/api/users/:id/access-code', async ({ env, user, p }) => {
+  requireOwner(user);
+  const r = await createAccessCode(env, p.id);
+  await audit(env, user, 'codigo_acceso', 'user', p.id);
+  return json(r);
+});
 
 // ---------- Hoteles (ajustes, solo el dueño) ----------
 on('PATCH', '/api/hotels/:hotel', async ({ req, env, user, p }) => {

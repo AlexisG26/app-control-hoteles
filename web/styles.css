@@ -305,3 +305,5 @@ details summary { cursor: pointer; font-weight: 700; color: var(--accent); paddi
 .seg.types small { font-weight: 400; font-size: 12px; opacity: .8; }
 fieldset.panel { margin: 0; }
 .sheet > * { flex-shrink: 0; }
+
+.code-big { font-family: var(--display); font-weight: 800; font-size: 44px; letter-spacing: .12em; text-align: center; padding: 14px; border-radius: 14px; background: var(--soft); font-variant-numeric: tabular-nums; user-select: all; }

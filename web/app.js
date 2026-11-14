@@ -234,10 +234,11 @@ function viewLogin() {
       ${canPasskey && hasPasskey ? `<button class="btn big" id="pk">Entrar con huella o Face ID</button><div class="divider">o con tu correo</div>` : ''}
       <form id="f1" class="stack">
         <label>Correo<input id="email" type="email" autocomplete="email" inputmode="email" required value="${esc(LS.get('ch-email', ''))}"></label>
-        <button class="btn ${hasPasskey ? 'ghost' : 'big'}" id="send">Enviar código</button>
+        <button class="btn ${hasPasskey ? 'ghost' : 'big'}" id="send">Enviar código a mi correo</button>
+        <button class="btn ghost" type="button" id="haveCode">Ya tengo un código de acceso</button>
       </form>
       <form id="f2" class="stack" hidden>
-        <p>Te enviamos un código de 6 números a <b id="sentTo"></b>.</p>
+        <p id="sentMsg">Te enviamos un código de 6 números a <b id="sentTo"></b>.</p>
         <label>Código<input id="code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]*" required></label>
         <button class="btn big" id="verify">Entrar</button>
         <button class="btn ghost" type="button" id="back">Usar otro correo</button>
@@ -256,7 +257,7 @@ function viewLogin() {
       $('sentTo').textContent = email; $('f1').hidden = true; $('f2').hidden = false;
       if (r.devCode) $('code').value = r.devCode;
       $('code').focus();
-    } catch (x) { err(x.message); }
+    } catch (x) { err(x.message + ' Si gerencia te dio un código de acceso, toca "Ya tengo un código de acceso".'); }
     $('send').disabled = false;
   };
   $('f2').onsubmit = async (e) => {
@@ -269,6 +270,13 @@ function viewLogin() {
   };
   $('code').addEventListener('input', (e) => { if (e.target.value.replace(/\D/g, '').length === 6) $('f2').requestSubmit(); });
   $('back').onclick = () => { $('f2').hidden = true; $('f1').hidden = false; };
+  $('haveCode').onclick = () => {
+    const email = $('email').value.trim();
+    if (!$('email').checkValidity() || !email) { err('Escribe primero tu correo.'); $('email').focus(); return; }
+    err(''); LS.set('ch-email', email);
+    $('sentMsg').innerHTML = `Escribe el código de acceso que te dio gerencia para <b>${esc(email)}</b>.`;
+    $('f1').hidden = true; $('f2').hidden = false; $('code').focus();
+  };
   if ($('pk')) $('pk').onclick = () => passkeyLogin().catch((x) => err(x.message));
 }
 
@@ -1130,15 +1138,42 @@ async function viewUsuarios() {
       ${u ? `<label>Chat de Telegram (opcional)<input id="u-t" value="${esc(u.telegram_chat_id || '')}" inputmode="numeric" placeholder="Para avisos por Telegram"></label>` : ''}
       <div class="err" id="err"></div>
       <div class="row"><button class="btn ghost" id="c">Cancelar</button><button class="btn" id="ok">${u ? 'Guardar' : 'Crear usuario'}</button></div>
+      ${u && u.active ? '<button class="btn ghost" id="acc">Generar código de acceso</button>' : ''}
       ${u && !u.is_owner ? `<button class="btn ${u.active ? 'warn' : 'ghost'}" id="tog">${u.active ? 'Desactivar usuario' : 'Reactivar usuario'}</button>` : ''}`, () => {
       $('c').onclick = closeSheet;
       const ms = () => [...document.querySelectorAll('[data-h]:checked')].map((x) => ({ hotel_id: x.dataset.h, role: x.dataset.r }));
-      $('ok').onclick = (e) => act(e.target, () => (u
-        ? api('PATCH', `/api/users/${u.id}`, { name: $('u-n').value, telegram_chat_id: $('u-t').value, ...(u.is_owner ? {} : { memberships: ms() }) })
-        : api('POST', '/api/users', { name: $('u-n').value, email: $('u-e').value, memberships: ms() })), u ? 'Usuario actualizado' : 'Usuario creado. Ya puede entrar con su correo.');
+      if ($('acc')) $('acc').onclick = () => accessCodeSheet(u);
+      $('ok').onclick = async (e) => {
+        if (u) return act(e.target, () => api('PATCH', `/api/users/${u.id}`, { name: $('u-n').value, telegram_chat_id: $('u-t').value, ...(u.is_owner ? {} : { memberships: ms() }) }), 'Usuario actualizado');
+        // Usuario nuevo: crearlo y mostrar su código de acceso de una vez
+        e.target.disabled = true; $('err').textContent = '';
+        try {
+          const name = $('u-n').value;
+          const r = await api('POST', '/api/users', { name, email: $('u-e').value, memberships: ms() });
+          await accessCodeSheet({ id: r.id, name, email: $('u-e').value.trim().toLowerCase() }, true);
+        } catch (x) { $('err').textContent = x.message; e.target.disabled = false; }
+      };
       if ($('tog')) $('tog').onclick = (e) => act(e.target, () => api('PATCH', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Usuario desactivado' : 'Usuario reactivado');
     });
   }
+}
+
+// Código de acceso de un solo uso para entrar sin correo (lo entrega gerencia por WhatsApp)
+async function accessCodeSheet(u, isNew = false) {
+  let r;
+  try { r = await api('POST', `/api/users/${u.id}/access-code`); } catch (e) { toast(e.message); return; }
+  const appUrl = location.origin + location.pathname;
+  const first = (u.name || '').split(' ')[0];
+  const msg = `Hola ${first}, ya tienes acceso a Control de Hoteles.\n\n1. Abre ${appUrl}\n2. Escribe tu correo: ${r.email}\n3. Toca "Ya tengo un código de acceso" y escribe: ${r.code}\n\nEl código vence en ${r.expires_in_hours} horas y sirve una sola vez. Al entrar, activa tu huella o Face ID.`;
+  sheet(`<h3>${isNew ? 'Usuario creado' : 'Código de acceso'}</h3>
+    <p>Dale este código a <b>${esc(u.name)}</b>. Entra con su correo <b>${esc(r.email)}</b> tocando <i>"Ya tengo un código de acceso"</i>.</p>
+    <div class="code-big" aria-label="Código">${r.code.replace(/(\d{3})(\d{3})/, '$1 $2')}</div>
+    <p class="hint">Sirve una sola vez y vence en ${r.expires_in_hours} horas. Si pides otro, el anterior deja de servir.</p>
+    <a class="btn" id="wa" href="https://wa.me/?text=${encodeURIComponent(msg)}" target="_blank" rel="noopener">Enviar por WhatsApp</a>
+    <div class="row"><button class="btn ghost" id="cp">Copiar mensaje</button><button class="btn ghost" id="c">Listo</button></div>`, () => {
+    $('c').onclick = () => { closeSheet(); render(); };
+    $('cp').onclick = () => navigator.clipboard.writeText(msg).then(() => toast('Mensaje copiado')).catch(() => toast('No se pudo copiar. Escribe el código a mano.'));
+  });
 }
 
 // ---------------- Arranque ----------------
