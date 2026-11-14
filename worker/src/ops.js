@@ -5,7 +5,11 @@ import {
 import { can, requireRole, rolesIn } from './auth.js';
 import { notify, usersWithRole } from './notify.js';
 
-export const PAY = ['Efectivo', 'Tarjeta', 'Transferencia', 'Orden de compra'];
+export const PAY = ['Efectivo', 'Tarjeta', 'Transferencia', 'Orden de compra', 'Pendiente'];
+/** Formas con las que se liquida una cuenta pendiente. */
+export const PAY_NOW = ['Efectivo', 'Tarjeta', 'Transferencia'];
+/** Condición SQL: filas que sí son dinero recibido (lo pendiente no cuenta hasta que se paga). */
+const CASH = `pay <> 'Pendiente'`;
 
 export async function getHotel(env, id) {
   const h = await env.DB.prepare('SELECT * FROM hotels WHERE id = ?').bind(String(id)).first();
@@ -41,10 +45,10 @@ function payInfo(hotel, b) {
 async function addSale(env, user, hotel, s) {
   const now = Date.now();
   const r = await env.DB.prepare(
-    `INSERT INTO sales (hotel_id, local_date, ts, concept, room, stay_id, kind, nights, hours, amount, pay, po, created_by)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO sales (hotel_id, local_date, ts, concept, room, stay_id, kind, nights, hours, amount, pay, po, created_by, parent_id, proof_key, paid_nights)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).bind(hotel.id, localDate(env, now), now, s.concept, s.room ?? null, s.stay_id ?? null, s.kind,
-    s.nights || 0, s.hours || 0, s.amount, s.pay, s.po, user.id).run();
+    s.nights || 0, s.hours || 0, s.amount, s.pay, s.po ?? null, user.id, s.parent_id ?? null, s.proof_key ?? null, s.paid_nights || 0).run();
   return r.meta.last_row_id;
 }
 
@@ -58,12 +62,13 @@ export async function listRooms(env, user, hotelId) {
             s.id AS stay_id, s.guest, s.kind, s.check_in_at, s.due_out_at, s.nights, s.hours, s.rate,
             (SELECT COUNT(*) FROM issues i WHERE i.room_id = r.id AND i.status = 'abierta') AS open_issues,
             (SELECT c.started_at FROM cleanings c WHERE c.room_id = r.id AND c.finished_at IS NULL ORDER BY c.id DESC LIMIT 1) AS cleaning_started_at,
-            (SELECT u.name FROM cleanings c JOIN users u ON u.id = c.started_by WHERE c.room_id = r.id AND c.finished_at IS NULL ORDER BY c.id DESC LIMIT 1) AS cleaning_by
+            (SELECT u.name FROM cleanings c JOIN users u ON u.id = c.started_by WHERE c.room_id = r.id AND c.finished_at IS NULL ORDER BY c.id DESC LIMIT 1) AS cleaning_by,
+            (SELECT COALESCE(SUM(x.amount - x.paid_amount), 0) FROM sales x WHERE x.stay_id = s.id AND x.pay = 'Pendiente' AND x.voided_at IS NULL AND x.settled_at IS NULL) AS pending_balance
        FROM rooms r LEFT JOIN stays s ON s.id = r.current_stay_id
       WHERE r.hotel_id = ? ORDER BY r.sort, r.number`,
   ).bind(hotelId).all();
   return results.map((r) => {
-    if (!showGuest) { r.guest = r.guest ? 'Ocupada' : null; r.rate = null; }
+    if (!showGuest) { r.guest = r.guest ? 'Ocupada' : null; r.rate = null; r.pending_balance = 0; }
     return r;
   });
 }
@@ -309,9 +314,97 @@ export async function voidSale(env, user, saleId, b) {
   }
   const reason = cleanStr(b.reason, 200);
   if (!reason) throw bad('Escribe el motivo de la anulación.');
+  if (s.pay === 'Pendiente') {
+    const paid = await env.DB.prepare('SELECT COUNT(*) AS n FROM sales WHERE parent_id = ? AND voided_at IS NULL').bind(s.id).first();
+    if (paid.n) throw bad('Esta cuenta ya tiene pagos. Anula primero los pagos registrados.');
+  }
   await env.DB.prepare('UPDATE sales SET voided_at = ?, voided_by = ?, void_reason = ? WHERE id = ?').bind(Date.now(), user.id, reason, s.id).run();
+  if (s.kind === 'abono' && s.parent_id) {
+    // Devolver el saldo a la cuenta pendiente
+    await env.DB.prepare('UPDATE sales SET paid_amount = MAX(0, paid_amount - ?), paid_nights = MAX(0, paid_nights - ?), settled_at = NULL WHERE id = ?')
+      .bind(s.amount, s.paid_nights || 0, s.parent_id).run();
+  }
   await audit(env, user, 'anulacion', 'sale', s.id, { reason, amount: s.amount });
   return { ok: true };
+}
+
+// ---------------- Pagos pendientes ----------------
+
+/** Cuentas por cobrar de un hotel, con su saldo, noches pagadas y el historial de pagos con comprobante. */
+export async function listPending(env, user, hotelId) {
+  requireRole(user, hotelId, 'recepcion', 'contabilidad');
+  const today = localDate(env);
+  const { results } = await env.DB.prepare(
+    `SELECT s.*, u.name AS by_name FROM sales s LEFT JOIN users u ON u.id = s.created_by
+      WHERE s.hotel_id = ? AND s.pay = 'Pendiente' AND s.voided_at IS NULL AND s.settled_at IS NULL ORDER BY s.ts ASC`,
+  ).bind(hotelId).all();
+  if (!results.length) return [];
+  const ids = results.map((r) => r.id);
+  const { results: pays } = await env.DB.prepare(
+    `SELECT a.id, a.parent_id, a.ts, a.local_date, a.amount, a.pay, a.paid_nights, (a.proof_key IS NOT NULL) AS has_proof, u.name AS by_name
+       FROM sales a LEFT JOIN users u ON u.id = a.created_by
+      WHERE a.parent_id IN (${ids.map(() => '?').join(',')}) AND a.voided_at IS NULL ORDER BY a.ts`,
+  ).bind(...ids).all();
+  return results.map((s) => ({
+    ...s,
+    balance: Math.round((s.amount - s.paid_amount) * 100) / 100,
+    nights_left: Math.max(0, (s.nights || 0) - (s.paid_nights || 0)),
+    rate: s.nights ? s.amount / s.nights : null,
+    days: daysBetween(s.local_date, today),
+    payments: pays.filter((p) => p.parent_id === s.id),
+  }));
+}
+
+/**
+ * Registrar un pago de una cuenta pendiente: cuántas noches cubre, cuánto, con qué y su comprobante.
+ * La transferencia exige la foto del comprobante.
+ */
+export async function payPending(env, user, saleId, { pay, nights, amount, photo }) {
+  const s = await env.DB.prepare('SELECT * FROM sales WHERE id = ?').bind(Number(saleId)).first();
+  if (!s || s.pay !== 'Pendiente' || s.voided_at) throw notFound('Cuenta pendiente no encontrada.');
+  requireRole(user, s.hotel_id, 'recepcion', 'contabilidad');
+  if (s.settled_at) throw bad('Esta cuenta ya está pagada.');
+  if (!PAY_NOW.includes(pay)) throw bad('Elige cómo pagó: efectivo, tarjeta o transferencia.');
+  const balance = Math.round((s.amount - s.paid_amount) * 100) / 100;
+  const left = Math.max(0, (s.nights || 0) - (s.paid_nights || 0));
+  let n = 0;
+  if (s.nights) {
+    n = posInt(nights, left || 1);
+    if (n > left) throw bad(`Solo quedan ${left} noche${left === 1 ? '' : 's'} por pagar.`);
+  }
+  // Monto: el que escriban; si no, el proporcional a las noches (y el saldo exacto si paga todo lo que falta).
+  let amt = amount !== undefined && amount !== null && amount !== '' ? money(amount)
+    : (s.nights ? (n === left ? balance : Math.round((s.amount / s.nights) * n * 100) / 100) : balance);
+  if (!amt) throw bad('Escribe el monto que pagó.');
+  if (amt > balance + 0.009) throw bad(`El pago es mayor que el saldo pendiente (L ${balance}).`);
+  if (pay === 'Transferencia' && !(photo && photo.size)) throw bad('Sube la foto del comprobante de la transferencia.');
+  let proofKey = null;
+  if (photo && photo.size) {
+    if (!env.PHOTOS) throw bad('El almacenamiento de fotos no está configurado.');
+    if (photo.size > 8 * 1024 * 1024) throw bad('La foto pesa más de 8 MB.');
+    if (!/^image\/(jpeg|png|webp|heic|heif)$/.test(photo.type)) throw bad('El comprobante debe ser una foto JPG, PNG, WEBP o HEIC.');
+    proofKey = `${s.hotel_id}/pagos/${s.id}/${Date.now()}-${crypto.randomUUID()}`;
+    await env.PHOTOS.put(proofKey, photo.stream(), { httpMetadata: { contentType: photo.type } });
+  }
+  const hotel = await getHotel(env, s.hotel_id);
+  const base = s.concept.replace(/\s*\(pendiente\)$/, '');
+  const paidN = (s.paid_nights || 0) + n;
+  const concept = s.nights ? `Pago de ${base} · noches ${(s.paid_nights || 0) + 1}–${paidN} de ${s.nights}` : `Pago de ${base}`;
+  const id = await addSale(env, user, hotel, { concept, room: s.room, stay_id: s.stay_id, kind: 'abono', amount: amt, pay, parent_id: s.id, proof_key: proofKey, paid_nights: n });
+  const newBalance = Math.round((balance - amt) * 100) / 100;
+  await env.DB.prepare('UPDATE sales SET paid_amount = paid_amount + ?, paid_nights = paid_nights + ?, settled_at = ? WHERE id = ?')
+    .bind(amt, n, newBalance <= 0.009 ? Date.now() : null, s.id).run();
+  await audit(env, user, 'pago_pendiente', 'sale', s.id, { pago: id, amount: amt, nights: n, pay });
+  return { ok: true, id, balance: Math.max(0, newBalance), nights_left: Math.max(0, left - n), settled: newBalance <= 0.009 };
+}
+
+export async function saleProof(env, user, saleId) {
+  const s = await env.DB.prepare('SELECT hotel_id, proof_key FROM sales WHERE id = ?').bind(Number(saleId)).first();
+  if (!s || !s.proof_key) throw notFound('Comprobante no encontrado.');
+  requireRole(user, s.hotel_id, 'recepcion', 'contabilidad');
+  const obj = await env.PHOTOS.get(s.proof_key);
+  if (!obj) throw notFound('Comprobante no encontrado.');
+  return new Response(obj.body, { headers: { 'content-type': obj.httpMetadata?.contentType || 'image/jpeg', 'cache-control': 'private, max-age=3600' } });
 }
 
 export async function poUpdate(env, user, saleId, b) {
@@ -349,8 +442,11 @@ export async function hotelSnapshot(env, hotel) {
   st.forEach((r) => { counts[r.status] = r.n; });
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const rev = async (from, to) => (await env.DB.prepare(
-    'SELECT COALESCE(SUM(amount),0) AS t, COUNT(*) AS n FROM sales WHERE hotel_id = ? AND voided_at IS NULL AND local_date BETWEEN ? AND ?',
+    `SELECT COALESCE(SUM(amount),0) AS t, COUNT(*) AS n FROM sales WHERE hotel_id = ? AND voided_at IS NULL AND ${CASH} AND local_date BETWEEN ? AND ?`,
   ).bind(hotel.id, from, to).first());
+  const pend = await env.DB.prepare(
+    `SELECT COUNT(*) AS n, COALESCE(SUM(amount - paid_amount),0) AS t FROM sales WHERE hotel_id = ? AND pay = 'Pendiente' AND voided_at IS NULL AND settled_at IS NULL`,
+  ).bind(hotel.id).first();
   const day = await rev(today, today);
   const wk = await rev(week, today);
   const month = await rev(today.slice(0, 8) + '01', today);
@@ -368,6 +464,8 @@ export async function hotelSnapshot(env, hotel) {
     po_pending: pos.length,
     po_pending_amount: pos.reduce((a, s) => a + s.amount, 0),
     po_alerts: pos.filter((p) => p.estado === 'facturar' || p.estado === 'vencida_30').length,
+    pending_count: pend.n,
+    pending_amount: pend.t,
   };
 }
 
@@ -385,6 +483,7 @@ export async function overview(env, user, hotels) {
       por_limpiar: sum((x) => x.counts.por_limpiar + x.counts.limpiando), bloqueada: sum((x) => x.counts.bloqueada),
       today: sum((x) => x.revenue.today), week: sum((x) => x.revenue.week), month: sum((x) => x.revenue.month),
       open_issues: sum((x) => x.open_issues), po_alerts: sum((x) => x.po_alerts),
+      pending_count: sum((x) => x.pending_count), pending_amount: sum((x) => x.pending_amount),
     },
   };
 }
@@ -395,14 +494,22 @@ export async function financeReport(env, user, hotelId, from, to) {
   if (!isDate(from) || !isDate(to) || from > to) throw bad('Rango de fechas inválido.');
   if (daysBetween(from, to) > 400) throw bad('El rango máximo es de un año.');
   const q = (sql) => env.DB.prepare(sql).bind(hotelId, from, to).all().then((r) => r.results);
-  const base = `FROM sales s LEFT JOIN users u ON u.id = s.created_by WHERE s.hotel_id = ? AND s.voided_at IS NULL AND s.local_date BETWEEN ? AND ?`;
-  const [byDay, byPay, byKind, byUser, tot] = await Promise.all([
+  const base = `FROM sales s LEFT JOIN users u ON u.id = s.created_by WHERE s.hotel_id = ? AND s.voided_at IS NULL AND s.${CASH} AND s.local_date BETWEEN ? AND ?`;
+  const sold = `FROM sales s WHERE s.hotel_id = ? AND s.voided_at IS NULL AND s.kind <> 'abono' AND s.local_date BETWEEN ? AND ?`;
+  const [byDay, byPay, byKind, byUser, tot, nightsSold, lodgingSold, pendingNew] = await Promise.all([
     q(`SELECT s.local_date AS d, SUM(s.amount) AS t, COUNT(*) AS n ${base} GROUP BY s.local_date ORDER BY s.local_date`),
     q(`SELECT s.pay AS k, SUM(s.amount) AS t, COUNT(*) AS n ${base} GROUP BY s.pay`),
     q(`SELECT s.kind AS k, SUM(s.amount) AS t, COUNT(*) AS n, SUM(s.nights) AS nights, SUM(s.hours) AS hours ${base} GROUP BY s.kind`),
     q(`SELECT COALESCE(u.name,'—') AS k, SUM(s.amount) AS t, COUNT(*) AS n ${base} GROUP BY u.name ORDER BY t DESC`),
-    q(`SELECT COALESCE(SUM(s.amount),0) AS t, COUNT(*) AS n, COALESCE(SUM(s.nights),0) AS nights ${base}`),
+    q(`SELECT COALESCE(SUM(s.amount),0) AS t, COUNT(*) AS n ${base}`),
+    q(`SELECT COALESCE(SUM(s.nights),0) AS nights ${sold}`),
+    q(`SELECT COALESCE(SUM(s.amount),0) AS t, COALESCE(SUM(s.nights),0) AS nights ${sold} AND s.kind = 'hospedaje'`),
+    q(`SELECT COUNT(*) AS n, COALESCE(SUM(s.amount),0) AS t ${sold} AND s.pay = 'Pendiente'`),
   ]);
+  tot[0].nights = nightsSold[0].nights;
+  const pendingNow = await env.DB.prepare(
+    `SELECT COUNT(*) AS n, COALESCE(SUM(amount - paid_amount),0) AS t FROM sales WHERE hotel_id = ? AND pay = 'Pendiente' AND voided_at IS NULL AND settled_at IS NULL`,
+  ).bind(hotelId).first();
   const days = daysBetween(from, to) + 1;
   const rooms = await env.DB.prepare('SELECT COUNT(*) AS n FROM rooms WHERE hotel_id = ?').bind(hotelId).first();
   return {
@@ -410,6 +517,8 @@ export async function financeReport(env, user, hotelId, from, to) {
     avg_day: tot[0].t / days,
     occupancy_nights_pct: rooms.n ? Math.round((tot[0].nights / (rooms.n * days)) * 100) : 0,
     by_day: byDay, by_pay: byPay, by_kind: byKind, by_user: byUser,
+    avg_night_sold: lodgingSold[0].nights ? lodgingSold[0].t / lodgingSold[0].nights : 0,
+    pending_created: pendingNew[0], pending_balance: pendingNow.t, pending_count: pendingNow.n,
   };
 }
 
@@ -427,15 +536,15 @@ export async function compareFinance(env, user, hotels, from, to) {
   for (const h of hotels) {
     const cur = await financeReport(env, user, h.id, from, to);
     const prev = await env.DB.prepare(
-      'SELECT COALESCE(SUM(amount),0) AS t FROM sales WHERE hotel_id = ? AND voided_at IS NULL AND local_date BETWEEN ? AND ?',
+      `SELECT COALESCE(SUM(amount),0) AS t FROM sales WHERE hotel_id = ? AND voided_at IS NULL AND ${CASH} AND local_date BETWEEN ? AND ?`,
     ).bind(h.id, prevFrom, prevTo).first();
-    const lodging = cur.by_kind.find((k) => k.k === 'hospedaje') || { t: 0, nights: 0 };
     out.push({
       id: h.id, name: h.name,
       total: cur.total, count: cur.count, nights: cur.nights,
       prev_total: prev.t,
       delta_pct: prev.t ? Math.round(((cur.total - prev.t) / prev.t) * 100) : null,
-      avg_night: lodging.nights ? lodging.t / lodging.nights : 0,
+      avg_night: cur.avg_night_sold,
+      pending_balance: cur.pending_balance, pending_count: cur.pending_count,
       avg_day: cur.avg_day,
       occupancy_pct: cur.occupancy_nights_pct,
       by_pay: cur.by_pay, by_kind: cur.by_kind, by_day: cur.by_day, by_user: cur.by_user,

@@ -15,6 +15,12 @@ const env = {
   ALLOWED_ORIGIN: 'http://localhost:8080', RP_ID: 'localhost', TZ_OFFSET_MIN: '-360', DEV_MODE: '1',
   OWNER_EMAIL: 'alexis@example.com', OWNER_NAME: 'Alexis Gutiérrez', AUTH_PEPPER: 'dev',
 };
+// Fotos en memoria (en producción es R2)
+const photos = new Map();
+env.PHOTOS = {
+  async put(key, stream, opts) { photos.set(key, { data: new Uint8Array(await new Response(stream).arrayBuffer()), httpMetadata: opts?.httpMetadata }); },
+  async get(key) { const o = photos.get(key); return o ? { body: o.data, httpMetadata: o.httpMetadata } : null; },
+};
 
 http.createServer(async (req, res) => {
   const chunks = [];

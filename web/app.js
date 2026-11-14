@@ -210,11 +210,15 @@ async function act(btn, fn, okMsg) {
 function payFields(h) {
   const pays = me.pay.filter((p) => p !== 'Orden de compra' || h.allow_po);
   return `<label>Forma de pago<select id="f-pay">${pays.map((p) => `<option>${p}</option>`).join('')}</select></label>
-    <label id="poL" hidden>Número de orden de compra<input id="f-po" autocomplete="off" placeholder="Ej. OC-2026-0153"></label>`;
+    <label id="poL" hidden>Número de orden de compra<input id="f-po" autocomplete="off" placeholder="Ej. OC-2026-0153"></label>
+    <p class="note" id="pendL" hidden>Queda como <b>pago pendiente</b>. No suma a la caja hasta que se cobre en <b>Pagos pendientes</b>, con su comprobante.</p>`;
 }
 function bindPay() {
   const s = $('f-pay');
-  s?.addEventListener('change', () => { $('poL').hidden = s.value !== 'Orden de compra'; if (!$('poL').hidden) $('f-po').focus(); });
+  s?.addEventListener('change', () => {
+    $('poL').hidden = s.value !== 'Orden de compra'; if (!$('poL').hidden) $('f-po').focus();
+    if ($('pendL')) $('pendL').hidden = s.value !== 'Pendiente';
+  });
 }
 const payBody = () => ({ pay: $('f-pay').value, po: $('f-po')?.value.trim() || undefined });
 
@@ -352,8 +356,9 @@ async function viewGlobal() {
           <div><span>Este mes</span><b>${fmt(t.month)}</b></div>
         </div>
         <a class="btn ghost" href="#/finanzas">Ver análisis por hotel</a>
-        ${t.open_issues || t.po_alerts ? `<div class="alerts">
+        ${t.open_issues || t.po_alerts || t.pending_count ? `<div class="alerts">
           ${t.open_issues ? `<span class="tag t-bloqueada">${t.open_issues} problema${t.open_issues > 1 ? 's' : ''} abierto${t.open_issues > 1 ? 's' : ''}</span>` : ''}
+          ${t.pending_count ? `<span class="tag t-warn">${fmt(t.pending_amount)} por cobrar (${t.pending_count})</span>` : ''}
           ${t.po_alerts ? `<span class="tag t-warn">${t.po_alerts} orden${t.po_alerts > 1 ? 'es' : ''} de compra con aviso</span>` : ''}
         </div>` : ''}
       </div>
@@ -450,6 +455,7 @@ async function viewFinanzas() {
           <div><span>Precio prom. noche</span><b>${h.avg_night ? fmt(Math.round(h.avg_night)) : '–'}</b></div>
           <div><span>Ocupación</span><b>${h.occupancy_pct}%</b></div>
           <div><span>Promedio diario</span><b>${fmt(Math.round(h.avg_day))}</b></div>
+          <div><span>Por cobrar (hoy)</span><b>${fmt(h.pending_balance)}</b></div>
         </div>
         ${h.by_pay.length ? `<div class="stack">
           <span class="eyebrow">Por forma de pago</span>
@@ -461,20 +467,21 @@ async function viewFinanzas() {
         <a class="btn ghost" href="#/hotel/${h.id}/contabilidad">Ver movimientos de ${esc(h.name.replace('Hostal ', ''))}</a>
       </article>`;
     }).join('')}</section>
-    <p class="hint">La ocupación se calcula con las noches cobradas en el período sobre las noches disponibles. Los montos anulados no cuentan.</p>`;
+    <p class="hint">Los ingresos son dinero recibido: lo que quedó pendiente se suma el día en que se paga. La ocupación usa las noches vendidas (pagadas o pendientes) sobre las disponibles. Los montos anulados no cuentan.</p>`;
   app.querySelectorAll('[data-period]').forEach((b) => { b.onclick = () => { LS.set('ch-period', b.dataset.period); render(); }; });
 }
 
 // ================= RECEPCIÓN =================
 async function viewRecepcion(h) {
   const today = hnDate();
-  const [rooms, sales] = await Promise.all([
+  const [rooms, sales, pending] = await Promise.all([
     api('GET', `/api/hotels/${h.id}/rooms`),
     api('GET', `/api/hotels/${h.id}/sales?from=${today}&to=${today}`),
+    api('GET', `/api/hotels/${h.id}/pending`),
   ]);
   const cnt = { libre: 0, ocupada: 0, por_limpiar: 0, limpiando: 0, bloqueada: 0 };
   rooms.forEach((r) => cnt[r.status]++);
-  const live = sales.filter((s) => !s.voided_at);
+  const live = sales.filter((s) => !s.voided_at && s.pay !== 'Pendiente');
   const total = live.reduce((a, s) => a + s.amount, 0);
   const byPay = {}; live.forEach((s) => { byPay[s.pay] = (byPay[s.pay] || 0) + s.amount; });
   const now = Date.now();
@@ -498,11 +505,14 @@ async function viewRecepcion(h) {
           ${r.open_issues ? '<span class="issue" title="Problema reportado"></span>' : ''}
           <span class="num">${esc(r.number)}</span><span class="tag t-${r.status}">${statusLabel[r.status]}</span>
           ${r.status === 'ocupada' ? `<span class="who">${esc(r.guest)}</span>` : ''}${due}
+          ${r.pending_balance > 0 ? `<span class="owe">Debe ${fmt(r.pending_balance)}</span>` : ''}
         </button>`;
       }).join('')}</div>
     </section>
+    ${pendingPanel(pending)}
     <section class="panel">
       <div class="sec-head"><h2>Caja de hoy</h2><b style="font-family:var(--display);font-size:24px">${fmt(total)}</b></div>
+      <p class="hint" style="margin-top:-6px">Dinero recibido hoy. Lo que quedó pendiente no suma hasta que se pague.</p>
       <div class="alerts">${Object.entries(byPay).map(([k, v]) => `<span class="tag t-info">${esc(k)} ${fmt(v)}</span>`).join('')}</div>
       <ul class="list">${sales.length ? sales.map((s) => saleRow(s, true)).join('') : '<li class="empty" style="display:block">Sin cobros hoy. Cada entrada o ingreso que registres aparece aquí.</li>'}</ul>
       <button class="btn ghost" id="extra">+ Registrar otro ingreso</button>
@@ -511,13 +521,104 @@ async function viewRecepcion(h) {
   app.querySelectorAll('[data-room]').forEach((b) => { b.onclick = () => roomSheet(h, rooms.find((r) => r.id === +b.dataset.room)); });
   $('extra').onclick = () => extraSheet(h);
   bindVoid();
+  bindPending(h, pending);
+  bindProofs();
   autoRefresh();
+}
+
+// ---------------- Pagos pendientes ----------------
+function pendingPanel(list) {
+  if (!list.length) return '';
+  const total = list.reduce((a, p) => a + p.balance, 0);
+  return `<section class="panel pend-panel">
+    <div class="sec-head"><h2>Pagos pendientes</h2><b class="owe-total">${fmt(total)}</b></div>
+    <ul class="list">${list.map((p) => {
+      const pct = p.nights ? (p.paid_nights / p.nights) * 100 : (p.paid_amount / p.amount) * 100;
+      return `<li class="pend-item"><div class="d"><b>${esc(p.concept.replace(/^Hab\. /, 'Hab. '))}</b>
+        <small>${p.nights ? `${p.paid_nights} de ${p.nights} noches pagadas · ` : ''}desde ${hnShort(p.ts)}${p.days ? ` · hace ${p.days} día${p.days > 1 ? 's' : ''}` : ''}</small>
+        <div class="progress"><span style="width:${pct}%"></span></div></div>
+        <span class="m">${fmt(p.balance)}</span>
+        <button class="mini primary" data-pay="${p.id}">Registrar pago</button></li>`;
+    }).join('')}</ul>
+  </section>`;
+}
+function bindPending(h, list) {
+  app.querySelectorAll('[data-pay]').forEach((b) => { b.onclick = () => paySheet(h, list.find((p) => p.id === +b.dataset.pay)); });
+}
+function bindProofs(root = app) {
+  root.querySelectorAll('[data-proof]').forEach((b) => {
+    b.onclick = async () => {
+      try {
+        const res = await api('GET', `/api/sales/${b.dataset.proof}/proof`, undefined, { raw: true });
+        const url = URL.createObjectURL(await res.blob());
+        sheet(`<h3>Comprobante</h3><img class="photo" style="max-height:70vh" src="${url}" alt="Comprobante de pago"><button class="btn ghost" id="c">Cerrar</button>`, () => { $('c').onclick = closeSheet; });
+      } catch (e) { toast(e.message); }
+    };
+  });
+}
+function paySheet(h, p) {
+  const byNight = p.nights > 0;
+  const per = byNight ? p.amount / p.nights : 0;
+  const methods = me.pay_now || ['Efectivo', 'Tarjeta', 'Transferencia'];
+  sheet(`<h3>Registrar pago</h3>
+    <p><b>${esc(p.concept)}</b></p>
+    <div class="kpis">
+      <div><span>Total</span><b>${fmt(p.amount)}</b></div>
+      <div><span>Saldo</span><b>${fmt(p.balance)}</b></div>
+      ${byNight ? `<div><span>Noches pagadas</span><b>${p.paid_nights} de ${p.nights}</b></div><div><span>Precio por noche</span><b>${fmt(Math.round(per))}</b></div>` : ''}
+    </div>
+    ${p.payments.length ? `<details><summary>Pagos anteriores (${p.payments.length})</summary><ul class="list">${p.payments.map((x) => `<li><div class="d">${hnShort(x.ts)} · ${esc(x.pay)}${x.paid_nights ? ` · ${x.paid_nights} noche${x.paid_nights > 1 ? 's' : ''}` : ''}<small>${esc(x.by_name || '')}</small></div><span class="m">${fmt(x.amount)}</span>${x.has_proof ? `<button class="mini" data-proof="${x.id}">Comprobante</button>` : '<span></span>'}</li>`).join('')}</ul></details>` : ''}
+    ${byNight ? `<label>¿Cuántas noches está pagando?
+      <div class="stepper"><button type="button" id="nm" aria-label="Menos">−</button><input id="f-n" type="number" inputmode="numeric" min="1" max="${p.nights_left}" value="${p.nights_left}"><button type="button" id="np" aria-label="Más">+</button></div></label>` : ''}
+    <label>Monto recibido (L)<input id="f-a" type="number" inputmode="decimal" step="any" min="0" value="${p.balance}"></label>
+    <label>¿Cómo pagó?<select id="f-m">${methods.map((m) => `<option ${m === 'Transferencia' ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
+    <label id="phL">Foto del comprobante <span id="phReq">(obligatoria para transferencia)</span>
+      <input id="f-ph" type="file" accept="image/*"></label>
+    <img id="prev" class="photo" alt="" hidden>
+    <div class="calc" id="calc"></div><div class="err" id="err"></div>
+    <div class="row"><button class="btn ghost" id="c">Cancelar</button><button class="btn" id="ok">Registrar pago</button></div>`, () => {
+    bindProofs($('sheetHost'));
+    const upd = () => {
+      if (byNight) {
+        const n = Math.min(p.nights_left, Math.max(1, Math.floor(+$('f-n').value || 1)));
+        $('f-a').value = n === p.nights_left ? p.balance : Math.round(per * n * 100) / 100;
+      }
+      const a = +$('f-a').value || 0;
+      const rest = Math.max(0, p.balance - a);
+      const nLeft = byNight ? p.nights_left - Math.min(p.nights_left, +$('f-n').value || 0) : 0;
+      $('calc').innerHTML = rest <= 0.009 ? '<b>Queda saldado.</b>' : `Quedará un saldo de <b>${fmt(rest)}</b>${byNight ? ` (${nLeft} noche${nLeft === 1 ? '' : 's'} por pagar)` : ''}.`;
+      $('phReq').textContent = $('f-m').value === 'Transferencia' ? '(obligatoria para transferencia)' : '(opcional)';
+    };
+    if (byNight) {
+      $('f-n').oninput = upd;
+      $('nm').onclick = () => { $('f-n').value = Math.max(1, (+$('f-n').value || 1) - 1); upd(); };
+      $('np').onclick = () => { $('f-n').value = Math.min(p.nights_left, (+$('f-n').value || 0) + 1); upd(); };
+    }
+    $('f-a').oninput = () => { const a = +$('f-a').value || 0; const rest = Math.max(0, p.balance - a); $('calc').innerHTML = rest <= 0.009 ? '<b>Queda saldado.</b>' : `Quedará un saldo de <b>${fmt(rest)}</b>.`; };
+    $('f-m').onchange = upd;
+    $('f-ph').onchange = () => { const f = $('f-ph').files[0]; if (f) { $('prev').src = URL.createObjectURL(f); $('prev').hidden = false; } };
+    upd();
+    $('c').onclick = closeSheet;
+    $('ok').onclick = (e) => act(e.target, async () => {
+      if ($('f-m').value === 'Transferencia' && !$('f-ph').files[0]) throw new Error('Sube la foto del comprobante de la transferencia.');
+      const fd = new FormData();
+      fd.append('pay', $('f-m').value);
+      fd.append('amount', $('f-a').value);
+      if (byNight) fd.append('nights', $('f-n').value);
+      const f = $('f-ph').files[0];
+      if (f) fd.append('photo', await shrink(f, 2000));
+      await api('POST', `/api/sales/${p.id}/payments`, fd);
+    }, 'Pago registrado');
+  });
 }
 
 function saleRow(s, canVoid) {
   const v = !!s.voided_at;
-  return `<li class="${v ? 'void' : ''}"><div class="d">${esc(s.concept)}<small>${hnTime(s.ts)} · ${esc(s.pay)}${s.po ? ' #' + esc(s.po) : ''} · ${esc(s.by_name || '—')}${v ? ` · anulado por ${esc(s.voided_by_name || '')}: ${esc(s.void_reason || '')}` : ''}</small></div>
-    <span class="m">${fmt(s.amount)}</span>${canVoid && !v ? `<button class="mini" data-void="${s.id}">Anular</button>` : '<span></span>'}</li>`;
+  const pend = s.pay === 'Pendiente';
+  const tag = pend ? (s.settled_at ? ' <span class="tag t-ok">Pagado</span>' : ' <span class="tag t-warn">Pendiente</span>') : '';
+  const acts = [s.proof_key ? `<button class="mini" data-proof="${s.id}">Comprobante</button>` : '', canVoid && !v ? `<button class="mini" data-void="${s.id}">Anular</button>` : ''].join('');
+  return `<li class="${v ? 'void' : ''} ${pend ? 'is-pend' : ''}"><div class="d">${esc(s.concept)}${tag}<small>${hnTime(s.ts)} · ${esc(s.pay)}${s.po ? ' #' + esc(s.po) : ''}${s.kind === 'abono' && s.paid_nights ? ` · ${s.paid_nights} noche${s.paid_nights > 1 ? 's' : ''}` : ''} · ${esc(s.by_name || '—')}${v ? ` · anulado por ${esc(s.voided_by_name || '')}: ${esc(s.void_reason || '')}` : ''}</small></div>
+    <span class="m">${fmt(s.amount)}</span><span class="acts">${acts}</span></li>`;
 }
 function bindVoid() {
   app.querySelectorAll('[data-void]').forEach((b) => {
@@ -573,6 +674,7 @@ function roomSheet(h, r) {
     sheet(`<h3>Hab. ${esc(r.number)}${isH ? ' · por hora' : ''}</h3>
       <p><b>${esc(r.guest)}</b></p>
       <p class="hint">Entró ${hnShort(r.check_in_at)} ${hnTime(r.check_in_at)} · ${isH ? 'Hasta las ' + hnTime(r.due_out_at) + ' (salida manual)' : 'Salida automática ' + hnDay(r.due_out_at) + ', ' + hnTime(r.due_out_at)}</p>
+      ${r.pending_balance > 0 ? `<button class="btn" id="payNow">Debe ${fmt(r.pending_balance)} · Registrar pago</button>` : ''}
       <button class="btn warn" id="out">Registrar salida ahora</button>
       <h3 style="font-size:17px;margin-top:6px">${isH ? 'Agregar tiempo' : 'Extender estadía'}</h3>
       <div class="row">${isH
@@ -584,6 +686,11 @@ function roomSheet(h, r) {
       bindPay();
       $('c').onclick = closeSheet;
       $('issue').onclick = () => issueSheet(h, r);
+      if ($('payNow')) $('payNow').onclick = async () => {
+        const list = await api('GET', `/api/hotels/${h.id}/pending`);
+        const p = list.find((x) => x.stay_id === r.stay_id);
+        if (p) paySheet(h, p); else toast('No encontré la cuenta pendiente.');
+      };
       $('out').onclick = (e) => act(e.target, () => api('POST', `/api/stays/${r.stay_id}/checkout`), `Hab. ${r.number} enviada a limpieza`);
       $('ext').onclick = (e) => act(e.target, () => api('POST', `/api/stays/${r.stay_id}/extend`,
         isH ? { hours: +$('f-x').value, amount: +$('f-xm').value, ...payBody() } : { nights: +$('f-x').value, rate: +$('f-xm').value, ...payBody() }),
@@ -717,14 +824,15 @@ async function viewContabilidad(h) {
   const week = LS.get('ch-week-' + h.id, monday(today));
   const wk = week > monday(today) ? monday(today) : week;
   const end = addDays(wk, 6);
-  const [fin, sales, pos] = await Promise.all([
+  const [fin, sales, pos, pending] = await Promise.all([
     api('GET', `/api/hotels/${h.id}/finance?from=${wk}&to=${end}`),
     api('GET', `/api/hotels/${h.id}/sales?from=${wk}&to=${end}`),
     h.allow_po ? api('GET', `/api/hotels/${h.id}/po`) : Promise.resolve([]),
+    api('GET', `/api/hotels/${h.id}/pending`),
   ]);
   const days = [...Array(7)].map((_, i) => addDays(wk, i));
-  const live = sales.filter((s) => !s.voided_at);
-  const pays = me.pay.filter((p) => p !== 'Orden de compra' || h.allow_po);
+  const live = sales.filter((s) => !s.voided_at && s.pay !== 'Pendiente'); // dinero recibido
+  const pays = me.pay.filter((p) => p !== 'Pendiente' && (p !== 'Orden de compra' || h.allow_po));
   const cell = (d, p) => live.filter((s) => s.local_date === d && s.pay === p).reduce((a, s) => a + s.amount, 0);
   const dayTot = (d) => live.filter((s) => s.local_date === d).reduce((a, s) => a + s.amount, 0);
   const max = Math.max(1, ...days.map(dayTot));
@@ -742,9 +850,11 @@ async function viewContabilidad(h) {
       <div class="tile"><span>Total semana</span><b>${fmt(fin.total)}</b></div>
       <div class="tile"><span>Promedio diario</span><b>${fmt(isCur ? fin.total / (days.filter((d) => d <= today).length || 1) : fin.avg_day)}</b></div>
       <div class="tile"><span>Noches vendidas</span><b>${fin.nights}</b></div>
+      <div class="tile ${fin.pending_balance ? 's-por_limpiar' : ''}"><span>Por cobrar</span><b>${fmt(fin.pending_balance)}</b></div>
       ${h.allow_hourly ? `<div class="tile"><span>Por hora</span><b>${kind('hora').n}</b></div>` : ''}
       <div class="tile"><span>Extras</span><b>${fmt(kind('extra').t)}</b></div>
     </div>
+    ${pendingPanel(pending)}
     ${h.allow_po ? `<section class="panel">
       <div class="sec-head"><h2>Órdenes de compra pendientes</h2><span class="hint">${pos.length} · ${fmt(pos.reduce((a, p) => a + p.amount, 0))}</span></div>
       <p class="hint">Aviso para facturar a los 15 días de la reserva y alerta a los 30 días si sigue sin cobrar.</p>
@@ -776,6 +886,8 @@ async function viewContabilidad(h) {
   $('wp').onclick = () => { LS.set('ch-week-' + h.id, addDays(wk, -7)); render(); };
   $('wn').onclick = () => { LS.set('ch-week-' + h.id, addDays(wk, 7)); render(); };
   app.querySelectorAll('[data-po]').forEach((b) => { b.onclick = () => act(b, () => api('POST', `/api/sales/${b.dataset.po}/po`, { action: b.dataset.a }), b.dataset.a === 'cobrada' ? 'Orden cobrada' : 'Orden facturada'); });
+  bindPending(h, pending);
+  bindProofs();
   bindVoid();
   $('csv').onclick = () => {
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;

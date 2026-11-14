@@ -3,7 +3,7 @@
 // creado por el dueño en la app (Ajustes → Conexión con Claude).
 import { hashToken, localDate, mondayOf, isDate } from './util.js';
 import { loadUser, hotelsOf, can } from './auth.js';
-import { overview, listRooms, financeReport, compareFinance, pendingPOs, listIssues, listSales } from './ops.js';
+import { overview, listRooms, financeReport, compareFinance, pendingPOs, listIssues, listSales, listPending } from './ops.js';
 
 const TOOLS = [
   {
@@ -38,6 +38,11 @@ const TOOLS = [
       properties: { hotel: { type: 'string' }, desde: { type: 'string' }, hasta: { type: 'string' } },
       required: ['hotel', 'desde', 'hasta'],
     },
+  },
+  {
+    name: 'pagos_pendientes',
+    description: 'Cuentas por cobrar (cobros registrados como Pendiente): cliente, habitación, total, pagado, saldo, noches pagadas de cuántas, días transcurridos y pagos recibidos con o sin comprobante.',
+    inputSchema: { type: 'object', properties: { hotel: { type: 'string' } }, required: ['hotel'] },
   },
   {
     name: 'ordenes_compra_pendientes',
@@ -80,6 +85,7 @@ async function callTool(env, user, hotels, name, args = {}) {
       const id = args.hotel ? hotelArg() : null;
       return (await pendingPOs(env, id)).filter((p) => can(user, p.hotel_id, 'contabilidad'));
     }
+    case 'pagos_pendientes': return listPending(env, user, hotelArg());
     case 'incidencias': return listIssues(env, user, hotelArg(), args.estado || 'abierta');
     default: throw new Error(`Herramienta desconocida: ${name}`);
   }

@@ -6,7 +6,7 @@ import {
 } from './auth.js';
 import {
   listRooms, checkIn, extendStay, checkOut, cleanStart, cleanFinish, reportIssue, listIssues, resolveIssue, issuePhoto,
-  addExtraSale, listSales, voidSale, poUpdate, pendingPOs, overview, financeReport, compareFinance, getHotel, audit, PAY,
+  addExtraSale, listSales, voidSale, poUpdate, pendingPOs, listPending, payPending, saleProof, PAY_NOW, overview, financeReport, compareFinance, getHotel, audit, PAY,
 } from './ops.js';
 import { runScheduled } from './cron.js';
 import { handleMcp } from './mcp.js';
@@ -62,7 +62,7 @@ on('GET', '/api/me', async ({ env, user }) => {
   const hotels = hotelsOf(user, await allHotels(env)).map((h) => ({ ...h, roles: rolesIn(user, h.id) }));
   return json({
     user: { id: user.id, email: user.email, name: user.name, is_owner: !!user.is_owner },
-    hotels, pay: PAY, today: localDate(env),
+    hotels, pay: PAY, pay_now: PAY_NOW, today: localDate(env),
     vapidPublicKey: env.VAPID_PUBLIC_KEY || null,
   });
 });
@@ -98,6 +98,17 @@ on('GET', '/api/issues/:id/photo', async ({ env, user, p }) => issuePhoto(env, u
 on('POST', '/api/hotels/:hotel/sales', async ({ req, env, user, p }) => json(await addExtraSale(env, user, p.hotel, await body(req))));
 on('GET', '/api/hotels/:hotel/sales', async ({ env, user, p, url }) => json(await listSales(env, user, p.hotel, url.searchParams.get('from'), url.searchParams.get('to'))));
 on('POST', '/api/sales/:id/void', async ({ req, env, user, p }) => json(await voidSale(env, user, p.id, await body(req))));
+on('GET', '/api/hotels/:hotel/pending', async ({ env, user, p }) => json(await listPending(env, user, p.hotel)));
+on('POST', '/api/sales/:id/payments', async ({ req, env, user, p }) => {
+  const ct = req.headers.get('content-type') || '';
+  let d;
+  if (ct.includes('multipart/form-data')) {
+    const f = await req.formData();
+    d = { pay: f.get('pay'), nights: f.get('nights'), amount: f.get('amount'), photo: f.get('photo') };
+  } else d = await body(req);
+  return json(await payPending(env, user, p.id, d));
+});
+on('GET', '/api/sales/:id/proof', async ({ env, user, p }) => saleProof(env, user, p.id));
 on('POST', '/api/sales/:id/po', async ({ req, env, user, p }) => json(await poUpdate(env, user, p.id, await body(req))));
 on('GET', '/api/hotels/:hotel/po', async ({ env, user, p }) => {
   if (!rolesIn(user, p.hotel).includes('contabilidad')) throw new HttpError(403, 'No tienes permiso para esta acción.');

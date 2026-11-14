@@ -28,6 +28,18 @@ const env = {
   VAPID_SUBJECT: 'mailto:alexis@example.com',
 };
 const ctx = { waitUntil() {} };
+// Imitación de R2 para las fotos
+const r2 = new Map();
+env.PHOTOS = {
+  async put(key, stream, opts) { r2.set(key, { data: new Uint8Array(await new Response(stream).arrayBuffer()), httpMetadata: opts?.httpMetadata }); },
+  async get(key) { const o = r2.get(key); return o ? { body: o.data, httpMetadata: o.httpMetadata } : null; },
+};
+async function form(path, token, fields) {
+  const fd = new FormData();
+  for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+  const res = await worker.fetch(new Request('https://api.test' + path, { method: 'POST', headers: { origin: ORIGIN, authorization: `Bearer ${token}` }, body: fd }), env, ctx);
+  return { status: res.status, data: await res.json() };
+}
 
 async function api(method, path, { token, body } = {}) {
   const headers = { origin: ORIGIN };
@@ -281,6 +293,58 @@ test('servidor MCP con token del dueño', async () => {
   assert.equal(data.hotels.length, 2);
   const fin = await call('/mcp', { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'estado_financiero', arguments: { hotel: 'prado' } } }, `Bearer ${t.data.token}`);
   assert.equal(JSON.parse(fin.data.result.content[0].text).hotel_id, 'prado');
+});
+
+test('pago pendiente: se cobra por noches con comprobante y no cuenta como ingreso hasta pagarse', async () => {
+  const today = localDate(env);
+  const before = (await api('GET', `/api/hotels/prokinto/finance?from=${today}&to=${today}`, { token: owner })).data.total;
+  const r = await api('POST', '/api/hotels/prokinto/checkin', { token: owner, body: { room_id: await roomId('prokinto', '503'), guest: 'Pepsi · Felipe', kind: 'noche', nights: 5, rate: 500, pay: 'Pendiente' } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  let fin = await api('GET', `/api/hotels/prokinto/finance?from=${today}&to=${today}`, { token: owner });
+  assert.equal(fin.data.total, before, 'lo pendiente no es ingreso');
+  assert.equal(fin.data.pending_balance, 2500);
+  let pend = (await api('GET', '/api/hotels/prokinto/pending', { token: owner })).data;
+  assert.equal(pend.length, 1);
+  assert.equal(pend[0].balance, 2500);
+  assert.equal(pend[0].nights_left, 5);
+  const rooms = await api('GET', '/api/hotels/prokinto/rooms', { token: owner });
+  assert.equal(rooms.data.find((x) => x.number === '503').pending_balance, 2500);
+  const id = pend[0].id;
+
+  // Transferencia sin foto: rechazada
+  const noPhoto = await form(`/api/sales/${id}/payments`, owner, { pay: 'Transferencia', nights: '2' });
+  assert.equal(noPhoto.status, 400);
+  assert.match(noPhoto.data.error, /comprobante/);
+  // Con foto: paga 2 de 5 noches
+  const photo = new File([new Uint8Array([0xff, 0xd8, 0xff, 1, 2, 3])], 'comprobante.jpg', { type: 'image/jpeg' });
+  const p1 = await form(`/api/sales/${id}/payments`, owner, { pay: 'Transferencia', nights: '2', photo });
+  assert.equal(p1.status, 200, JSON.stringify(p1.data));
+  assert.equal(p1.data.balance, 1500);
+  assert.equal(p1.data.nights_left, 3);
+  // No se pueden pagar más noches de las que faltan
+  assert.equal((await api('POST', `/api/sales/${id}/payments`, { token: owner, body: { pay: 'Efectivo', nights: 4 } })).status, 400);
+  fin = await api('GET', `/api/hotels/prokinto/finance?from=${today}&to=${today}`, { token: owner });
+  assert.equal(fin.data.total, before + 1000);
+  assert.equal(fin.data.by_pay.find((x) => x.k === 'Transferencia').t >= 1000, true);
+  pend = (await api('GET', '/api/hotels/prokinto/pending', { token: owner })).data;
+  assert.equal(pend[0].payments.length, 1);
+  assert.equal(pend[0].payments[0].has_proof, 1);
+  // El comprobante se puede ver
+  const proof = await worker.fetch(new Request(`https://api.test/api/sales/${p1.data.id}/proof`, { headers: { origin: ORIGIN, authorization: `Bearer ${owner}` } }), env, ctx);
+  assert.equal(proof.status, 200);
+  assert.equal(proof.headers.get('content-type'), 'image/jpeg');
+  // La cuenta con pagos no se puede anular; el pago sí, y devuelve el saldo
+  assert.equal((await api('POST', `/api/sales/${id}/void`, { token: owner, body: { reason: 'x' } })).status, 400);
+  assert.equal((await api('POST', `/api/sales/${p1.data.id}/void`, { token: owner, body: { reason: 'Comprobante equivocado' } })).status, 200);
+  pend = (await api('GET', '/api/hotels/prokinto/pending', { token: owner })).data;
+  assert.equal(pend[0].balance, 2500);
+  assert.equal(pend[0].nights_left, 5);
+  // Paga todo en efectivo: queda saldada y sale de la lista
+  const p2 = await api('POST', `/api/sales/${id}/payments`, { token: owner, body: { pay: 'Efectivo', nights: 5 } });
+  assert.equal(p2.data.settled, true);
+  assert.equal((await api('GET', '/api/hotels/prokinto/pending', { token: owner })).data.length, 0);
+  // Orden de compra sigue siendo solo de Prado Alto
+  assert.equal((await api('POST', '/api/hotels/prokinto/sales', { token: owner, body: { concept: 'x', amount: 10, pay: 'Orden de compra', po: '1' } })).status, 400);
 });
 
 test('desactivar un usuario cierra sus sesiones', async () => {
