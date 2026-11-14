@@ -3,7 +3,7 @@
 // creado por el dueño en la app (Ajustes → Conexión con Claude).
 import { hashToken, localDate, mondayOf, isDate } from './util.js';
 import { loadUser, hotelsOf, can } from './auth.js';
-import { overview, listRooms, financeReport, pendingPOs, listIssues, listSales } from './ops.js';
+import { overview, listRooms, financeReport, compareFinance, pendingPOs, listIssues, listSales } from './ops.js';
 
 const TOOLS = [
   {
@@ -24,6 +24,11 @@ const TOOLS = [
       properties: { hotel: { type: 'string' }, desde: { type: 'string' }, hasta: { type: 'string' } },
       required: ['hotel'],
     },
+  },
+  {
+    name: 'comparar_hoteles',
+    description: 'Compara cuánto generó cada hotel en un rango de fechas: total, parte del total, variación contra el período anterior de igual duración, precio promedio por noche, ocupación y desglose. Fechas AAAA-MM-DD; por defecto el mes en curso.',
+    inputSchema: { type: 'object', properties: { desde: { type: 'string' }, hasta: { type: 'string' } } },
   },
   {
     name: 'movimientos',
@@ -64,6 +69,11 @@ async function callTool(env, user, hotels, name, args = {}) {
       const from = isDate(args.desde) ? args.desde : mondayOf(today);
       const to = isDate(args.hasta) ? args.hasta : today;
       return financeReport(env, user, hotelArg(), from, to);
+    }
+    case 'comparar_hoteles': {
+      const from = isDate(args.desde) ? args.desde : today.slice(0, 8) + '01';
+      const to = isDate(args.hasta) ? args.hasta : today;
+      return compareFinance(env, user, hotels, from, to);
     }
     case 'movimientos': return listSales(env, user, hotelArg(), args.desde, args.hasta);
     case 'ordenes_compra_pendientes': {

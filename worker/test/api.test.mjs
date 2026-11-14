@@ -191,6 +191,17 @@ test('recepción solo ve la caja de hoy; contabilidad ve todo y el estado financ
   const ov = await api('GET', '/api/overview', { token: owner });
   assert.equal(ov.data.hotels.length, 2);
   assert.equal(ov.data.totals.today, 2650);
+  // El panel global y el análisis comparado son solo para gerencia
+  assert.equal((await api('GET', '/api/overview', { token: conta })).status, 403);
+  const cmp = await api('GET', `/api/finance/compare?from=${addDays(today, -6)}&to=${today}`, { token: owner });
+  assert.equal(cmp.status, 200);
+  assert.equal(cmp.data.total, 2650);
+  const pr = cmp.data.hotels.find((h) => h.id === 'prado');
+  assert.equal(pr.share_pct, 100);
+  assert.equal(pr.prev_total, 0);
+  assert.equal(pr.delta_pct, null);
+  assert.equal(pr.avg_night, (1400 + 900) / 3);
+  assert.equal((await api('GET', `/api/finance/compare?from=${today}&to=${today}`, { token: conta })).status, 403);
 });
 
 test('anular requiere motivo y queda registrado', async () => {

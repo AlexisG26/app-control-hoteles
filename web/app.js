@@ -51,11 +51,11 @@ async function api(method, path, body, { raw = false } = {}) {
 let me = null; // { user, hotels, pay, vapidPublicKey }
 let unread = 0;
 let refreshTimer = null;
-const roleLabel = { admin: 'Administración', contabilidad: 'Contabilidad', recepcion: 'Recepción', limpieza: 'Limpieza', mantenimiento: 'Mantenimiento' };
+const roleLabel = { admin: 'Administración', contabilidad: 'Contabilidad', recepcion: 'Recepción y reservas', limpieza: 'Limpieza', mantenimiento: 'Mantenimiento' };
 const statusLabel = { libre: 'Libre', ocupada: 'Ocupada', por_limpiar: 'Por limpiar', limpiando: 'Limpiando', bloqueada: 'Bloqueada' };
 const hotelById = (id) => me.hotels.find((h) => h.id === id);
 const has = (hotelId, ...roles) => { const h = hotelById(hotelId); return !!h && roles.some((r) => h.roles.includes(r)); };
-const isGlobal = () => me.user.is_owner || me.hotels.some((h) => h.roles.includes('contabilidad'));
+const isGlobal = () => !!me.user.is_owner; // el panel global es solo para gerencia
 
 function logout(callApi = true) {
   if (callApi && token) api('POST', '/api/auth/logout').catch(() => {});
@@ -81,12 +81,13 @@ function homeRoute() {
 }
 function hotelTabs(h) {
   const t = [];
-  if (h.roles.includes('recepcion')) t.push(['recepcion', 'Recepción']);
-  if (h.roles.includes('limpieza')) t.push(['limpieza', 'Limpieza']);
-  if (h.roles.some((r) => ['recepcion', 'limpieza', 'mantenimiento'].includes(r))) t.push(['problemas', 'Problemas']);
-  if (h.roles.includes('contabilidad')) t.push(['contabilidad', 'Contabilidad']);
+  if (h.roles.includes('recepcion')) t.push(['recepcion', 'Habitaciones', 'key']);
+  if (h.roles.includes('limpieza')) t.push(['limpieza', 'Limpieza', 'broom']);
+  if (h.roles.some((r) => ['recepcion', 'limpieza', 'mantenimiento'].includes(r))) t.push(['problemas', 'Problemas', 'wrench']);
+  if (h.roles.includes('contabilidad')) t.push(['contabilidad', 'Contabilidad', 'cash']);
   return t;
 }
+const globalTabs = () => [['#/global', 'Resumen', 'grid'], ['#/finanzas', 'Finanzas', 'chart'], ['#/usuarios', 'Equipo', 'users']];
 
 window.addEventListener('hashchange', render);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && me) softRefresh(); });
@@ -102,7 +103,8 @@ async function render() {
   }
   try {
     if (r.name === 'inicio' || r.name === 'entrar') return go(homeRoute());
-    if (r.name === 'global') return await viewGlobal();
+    if (r.name === 'global' && isGlobal()) return await viewGlobal();
+    if (r.name === 'finanzas' && isGlobal()) return await viewFinanzas();
     if (r.name === 'hotel') {
       const h = hotelById(r.parts[1]);
       if (!h) return go(homeRoute());
@@ -131,26 +133,48 @@ async function softRefresh() {
 }
 function autoRefresh() { refreshTimer = setInterval(() => { if (!document.hidden) softRefresh(); }, 20000); }
 
-// ---------------- Encabezado ----------------
+// ---------------- Íconos (trazos simples, heredan el color del texto) ----------------
+const ICON = {
+  key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/>',
+  broom: '<path d="M14 4l-4 8M7 13h8l1 7H6z"/><path d="M9 20v-3M12 20v-3"/>',
+  wrench: '<path d="M14.5 5.5a4 4 0 0 0 4.9 5L12 18a2.1 2.1 0 0 1-3-3l7.5-7.4a4 4 0 0 0-2-2.1z"/>',
+  cash: '<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9v.01M18 15v.01"/>',
+  grid: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
+  chart: '<path d="M4 20h16M7 16v-4M12 16V8M17 16v-7"/>',
+  users: '<circle cx="9" cy="8" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 5.5a3 3 0 0 1 0 5.5M17.5 19a5 5 0 0 0-2.5-4.3"/>',
+  bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/>',
+};
+const icon = (n) => `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n] || ''}</svg>`;
+
+// ---------------- Encabezado y barra inferior ----------------
 function header(current = {}) {
   const hotelSel = current.hotel;
   const gl = isGlobal();
-  const hotelNav = me.hotels.length > 1 || gl
-    ? `<div class="seg" role="group" aria-label="Hotel">
+  const title = hotelSel ? hotelSel.name : (current.title || 'Control de Hoteles');
+  const switcher = me.hotels.length > 1 || gl
+    ? `<div class="seg ctx" role="group" aria-label="Hotel">
         ${gl ? `<button aria-pressed="${current.global ? 'true' : 'false'}" data-go="#/global">Global</button>` : ''}
-        ${me.hotels.map((h) => `<button aria-pressed="${hotelSel?.id === h.id}" data-go="#/hotel/${h.id}/${hotelTabs(h)[0]?.[0] || ''}">${esc(h.name)}</button>`).join('')}
+        ${me.hotels.map((h) => `<button aria-pressed="${hotelSel?.id === h.id}" data-go="#/hotel/${h.id}/${hotelTabs(h)[0]?.[0] || ''}">${esc(h.name.replace('Hostal ', ''))}</button>`).join('')}
       </div>` : '';
-  const tabs = hotelSel ? `<nav class="tabs">${hotelTabs(hotelSel).map(([k, l]) => `<a href="#/hotel/${hotelSel.id}/${k}" aria-current="${current.view === k ? 'page' : 'false'}">${l}</a>`).join('')}</nav>` : '';
+  const items = hotelSel
+    ? hotelTabs(hotelSel).map(([k, l, ic]) => [`#/hotel/${hotelSel.id}/${k}`, l, ic, current.view === k])
+    : current.global ? globalTabs().map(([href, l, ic]) => [href, l, ic, current.view === href]) : [];
+  const nav = items.length > 1
+    ? `<nav class="tabbar" aria-label="Secciones">${items.map(([href, l, ic, on]) => `<a href="${href}" ${on ? 'aria-current="page"' : ''}>${icon(ic)}<span>${l}</span></a>`).join('')}</nav>` : '';
+  const initials = me.user.name.split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
   return `
-    <header class="top">
-      <div class="brand"><img src="icons/icon-192.png" alt=""><div><b>Control de Hoteles</b><small>${esc(me.user.name)} · <span class="clock" id="clock">${hnTime()}</span></small></div></div>
-      <div class="top-actions">
-        <button class="icon-btn" data-go="#/avisos" aria-label="Avisos">Avisos${unread ? `<span class="dot">${unread}</span>` : ''}</button>
-        ${me.user.is_owner ? '<button class="icon-btn" data-go="#/usuarios">Usuarios</button>' : ''}
-        <button class="icon-btn" data-go="#/ajustes">Ajustes</button>
+    <header class="appbar">
+      <div class="appbar-row">
+        <div class="brand"><img src="icons/icon-192.png" alt=""><div><b>${esc(title)}</b><small>${esc(me.user.name)} · <span class="clock" id="clock">${hnTime()}</span></small></div></div>
+        <div class="top-actions">
+          <button class="round" data-go="#/avisos" aria-label="Avisos${unread ? `, ${unread} sin leer` : ''}">${icon('bell')}${unread ? `<span class="dot">${unread > 9 ? '9+' : unread}</span>` : ''}</button>
+          <button class="round avatar" data-go="#/ajustes" aria-label="Ajustes">${esc(initials)}</button>
+        </div>
       </div>
+      ${switcher}
     </header>
-    ${hotelNav}${tabs}`;
+    ${nav}`;
 }
 document.addEventListener('click', (e) => {
   const g = e.target.closest('[data-go]');
@@ -312,7 +336,7 @@ async function viewGlobal() {
   const t = ov.totals;
   const statusKeys = ['libre', 'ocupada', 'por_limpiar', 'limpiando', 'bloqueada'];
   const colors = { libre: 'var(--free)', ocupada: 'var(--occ)', por_limpiar: 'var(--dirty)', limpiando: 'var(--cleaning)', bloqueada: 'var(--block)' };
-  app.innerHTML = header({ global: true }) + `
+  app.innerHTML = header({ global: true, view: '#/global', title: 'Gerencia' }) + `
     <section>
       <div class="sec-head"><h1>Todos los hoteles</h1><span class="hint">${esc(hnDay(Date.now()))}</span></div>
       <div class="tiles">
@@ -327,6 +351,7 @@ async function viewGlobal() {
           <div><span>Esta semana</span><b>${fmt(t.week)}</b></div>
           <div><span>Este mes</span><b>${fmt(t.month)}</b></div>
         </div>
+        <a class="btn ghost" href="#/finanzas">Ver análisis por hotel</a>
         ${t.open_issues || t.po_alerts ? `<div class="alerts">
           ${t.open_issues ? `<span class="tag t-bloqueada">${t.open_issues} problema${t.open_issues > 1 ? 's' : ''} abierto${t.open_issues > 1 ? 's' : ''}</span>` : ''}
           ${t.po_alerts ? `<span class="tag t-warn">${t.po_alerts} orden${t.po_alerts > 1 ? 'es' : ''} de compra con aviso</span>` : ''}
@@ -354,6 +379,90 @@ async function viewGlobal() {
     ${installBanner()}`;
   bindInstall();
   autoRefresh();
+}
+
+
+// ================= FINANZAS (gerencia) =================
+// Cuánto generó cada hotel en el período, su parte del total y cómo va contra el período anterior.
+const PERIODS = [['hoy', 'Hoy'], ['semana', 'Semana'], ['mes', 'Mes'], ['mes_ant', 'Mes pasado'], ['anio', 'Año']];
+function periodRange(k) {
+  const t = hnDate();
+  if (k === 'hoy') return [t, t];
+  if (k === 'semana') return [monday(t), t];
+  if (k === 'mes') return [t.slice(0, 8) + '01', t];
+  if (k === 'anio') return [t.slice(0, 5) + '01-01', t];
+  const first = t.slice(0, 8) + '01';
+  const lastPrev = addDays(first, -1);
+  return [lastPrev.slice(0, 8) + '01', lastPrev];
+}
+const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const HOTEL_COLOR = ['var(--h1)', 'var(--h2)', 'var(--h3)'];
+const delta = (d, prev) => (d === null
+  ? `<span class="chg flat">${prev ? '' : 'Sin datos del período anterior'}</span>`
+  : `<span class="chg ${d > 0 ? 'up' : d < 0 ? 'down' : 'flat'}">${d > 0 ? '▲' : d < 0 ? '▼' : '='} ${Math.abs(d)}%</span>`);
+
+async function viewFinanzas() {
+  const pk = LS.get('ch-period', 'mes');
+  const [from, to] = periodRange(pk);
+  const f = await api('GET', `/api/finance/compare?from=${from}&to=${to}`);
+  const max = Math.max(1, ...f.hotels.map((h) => h.total));
+  const color = (i) => HOTEL_COLOR[i % HOTEL_COLOR.length];
+  const rangeTxt = from === to ? hnDay(parseD(from)) : `${parseD(from).getUTCDate()} ${MONTHS[parseD(from).getUTCMonth()]} – ${parseD(to).getUTCDate()} ${MONTHS[parseD(to).getUTCMonth()]} ${parseD(to).getUTCFullYear()}`;
+
+  // Tendencia: por día (hasta 31 días) o por mes
+  const daily = f.days <= 31;
+  const keys = [];
+  if (daily) for (let d = from; d <= to; d = addDays(d, 1)) keys.push(d);
+  else { for (let m = from.slice(0, 7); m <= to.slice(0, 7);) { keys.push(m); const [y, mo] = m.split('-').map(Number); m = mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, '0')}`; } }
+  const val = (h, k) => h.by_day.filter((r) => (daily ? r.d === k : r.d.slice(0, 7) === k)).reduce((a, r) => a + r.t, 0);
+  const tmax = Math.max(1, ...keys.map((k) => Math.max(...f.hotels.map((h) => val(h, k)))));
+  const showTrend = keys.length > 1;
+  const label = (k, i) => (daily ? (keys.length > 10 && i % Math.ceil(keys.length / 8) !== 0 ? '' : String(parseD(k).getUTCDate())) : MONTHS[Number(k.slice(5)) - 1]);
+  const payColors = { Efectivo: 'var(--free)', Tarjeta: 'var(--cleaning)', Transferencia: 'var(--brass)', 'Orden de compra': 'var(--block)' };
+  const kindLabel = { hospedaje: 'Por noche', hora: 'Por hora', extra: 'Extras' };
+
+  app.innerHTML = header({ global: true, view: '#/finanzas', title: 'Gerencia' }) + `
+    <div class="seg period" role="group" aria-label="Período">${PERIODS.map(([k, l]) => `<button aria-pressed="${pk === k}" data-period="${k}">${l}</button>`).join('')}</div>
+    <section class="panel hero">
+      <span class="eyebrow">Total de los hoteles · ${esc(rangeTxt)}</span>
+      <b class="big">${fmt(f.total)}</b>
+      <p class="hint">${delta(f.delta_pct, f.prev_total)} ${f.delta_pct !== null ? `vs. ${fmt(f.prev_total)} en los ${f.days} día${f.days > 1 ? 's' : ''} anteriores` : ''}</p>
+      <div class="compare">${f.hotels.map((h, i) => `
+        <div class="cmp-row"><span class="cmp-name"><i style="background:${color(i)}"></i>${esc(h.name.replace('Hostal ', ''))}</span>
+          <div class="cmp-bar"><span style="width:${(h.total / max) * 100}%;background:${color(i)}"></span></div>
+          <span class="cmp-val">${fmt(h.total)} <small>${h.share_pct}%</small></span></div>`).join('')}
+      </div>
+    </section>
+    ${showTrend ? `<section class="panel">
+      <div class="sec-head"><h2>${daily ? 'Ingresos por día' : 'Ingresos por mes'}</h2>
+        <div class="legend">${f.hotels.map((h, i) => `<span style="--c:${color(i)}">${esc(h.name.replace('Hostal ', ''))}</span>`).join('')}</div></div>
+      <div class="trend" style="--n:${keys.length}">${keys.map((k, i) => `<div class="tcol" title="${k}">
+        <div class="tbars">${f.hotels.map((h, j) => `<span style="height:${(val(h, k) / tmax) * 100}%;background:${color(j)}"></span>`).join('')}</div>
+        <span class="tl ${daily && k === hnDate() ? 'now' : ''}">${label(k, i)}</span></div>`).join('')}</div>
+    </section>` : ''}
+    <section class="hotels">${f.hotels.map((h, i) => {
+      const payTotal = h.by_pay.reduce((a, p) => a + p.t, 0) || 1;
+      return `<article class="panel">
+        <div class="sec-head"><h2><i class="hdot" style="background:${color(i)}"></i>${esc(h.name)}</h2>${delta(h.delta_pct, h.prev_total)}</div>
+        <b class="big">${fmt(h.total)}</b>
+        <div class="kpis">
+          <div><span>Noches vendidas</span><b>${h.nights}</b></div>
+          <div><span>Precio prom. noche</span><b>${h.avg_night ? fmt(Math.round(h.avg_night)) : '–'}</b></div>
+          <div><span>Ocupación</span><b>${h.occupancy_pct}%</b></div>
+          <div><span>Promedio diario</span><b>${fmt(Math.round(h.avg_day))}</b></div>
+        </div>
+        ${h.by_pay.length ? `<div class="stack">
+          <span class="eyebrow">Por forma de pago</span>
+          <div class="stackbar">${h.by_pay.map((p) => `<span style="width:${(p.t / payTotal) * 100}%;background:${payColors[p.k] || 'var(--muted)'}"></span>`).join('')}</div>
+          <div class="legend">${h.by_pay.sort((a, b) => b.t - a.t).map((p) => `<span style="--c:${payColors[p.k] || 'var(--muted)'}">${esc(p.k)} ${fmt(p.t)}</span>`).join('')}</div>
+        </div>` : '<p class="empty">Sin ingresos en este período.</p>'}
+        ${h.by_kind.length ? `<div class="legend plain">${h.by_kind.map((k) => `<span>${kindLabel[k.k] || k.k}: <b>${fmt(k.t)}</b></span>`).join('')}</div>` : ''}
+        ${h.by_user.length ? `<details><summary>Por quién registró</summary><ul class="list">${h.by_user.map((u) => `<li><div class="d">${esc(u.k)}<small>${u.n} cobro${u.n > 1 ? 's' : ''}</small></div><span class="m">${fmt(u.t)}</span><span></span></li>`).join('')}</ul></details>` : ''}
+        <a class="btn ghost" href="#/hotel/${h.id}/contabilidad">Ver movimientos de ${esc(h.name.replace('Hostal ', ''))}</a>
+      </article>`;
+    }).join('')}</section>
+    <p class="hint">La ocupación se calcula con las noches cobradas en el período sobre las noches disponibles. Los montos anulados no cuentan.</p>`;
+  app.querySelectorAll('[data-period]').forEach((b) => { b.onclick = () => { LS.set('ch-period', b.dataset.period); render(); }; });
 }
 
 // ================= RECEPCIÓN =================
@@ -682,7 +791,7 @@ async function viewContabilidad(h) {
 // ================= AVISOS =================
 async function viewAvisos() {
   const list = await api('GET', '/api/notifications');
-  app.innerHTML = header() + `
+  app.innerHTML = header({ title: 'Avisos' }) + `
     <div class="sec-head"><h1>Avisos</h1>${list.some((n) => !n.read_at) ? '<button class="mini" id="read">Marcar todo como leído</button>' : ''}</div>
     <section class="panel"><ul class="list">${list.length ? list.map((n) => `<li><div class="d">${n.read_at ? '' : '<span class="tag t-warn">Nuevo</span> '}<b>${esc(n.title)}</b><small>${esc(n.body)} · ${hnShort(n.created_at)} ${hnTime(n.created_at)}</small></div><a class="mini" href="${esc(n.url || '#/')}">Ver</a><span></span></li>`).join('')
       : '<li class="empty" style="display:block">Aún no tienes avisos.</li>'}</ul></section>`;
@@ -738,7 +847,7 @@ async function viewAjustes() {
     me.user.is_owner ? api('GET', '/api/tokens') : Promise.resolve([]),
   ]);
   const roles = me.hotels.map((h) => `${esc(h.name)}: ${h.roles.map((r) => roleLabel[r]).join(', ')}`).join('<br>');
-  app.innerHTML = header() + `
+  app.innerHTML = header({ title: 'Ajustes' }) + `
     <h1>Ajustes</h1>
     <section class="panel">
       <h2>${esc(me.user.name)}</h2>
@@ -805,9 +914,9 @@ async function viewUsuarios() {
     const r = u.memberships.filter((m) => m.hotel_id === h.id).map((m) => roleLabel[m.role]);
     return r.length ? `${h.name}: ${r.join(', ')}` : '';
   }).filter(Boolean).join(' · ') || 'Sin roles');
-  app.innerHTML = header() + `
-    <div class="sec-head"><h1>Usuarios</h1><button class="btn" id="add">+ Agregar usuario</button></div>
-    <p class="hint">Cada persona entra con su correo. Dale solo los roles que necesita en cada hotel.</p>
+  app.innerHTML = header({ global: true, view: '#/usuarios', title: 'Gerencia' }) + `
+    <div class="sec-head"><h1>Equipo</h1><button class="btn" id="add">+ Agregar usuario</button></div>
+    <p class="hint">Cada persona entra con su correo y solo ve lo que su rol necesita: <b>Recepción y reservas</b> registra entradas y cobros; <b>Limpieza</b> ve qué limpiar y reporta problemas con foto; <b>Contabilidad</b> ve la caja y las finanzas de su hotel. El panel Global es solo para gerencia.</p>
     <section class="panel"><ul class="list">${users.map((u) => `
       <li><div class="d"><b>${esc(u.name)}</b> ${u.active ? '' : '<span class="tag t-bad">Desactivado</span>'}<small>${esc(u.email)}<br>${esc(desc(u))}</small></div><span></span>
       <button class="mini" data-edit="${u.id}">Editar</button></li>`).join('')}</ul></section>`;

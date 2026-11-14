@@ -39,3 +39,23 @@ http.createServer(async (req, res) => {
 }).listen(8080, () => console.log('PWA      http://localhost:8080'));
 
 setInterval(() => runScheduled(env).catch(console.error), 60000);
+
+// DEMO=1 carga 8 semanas de ventas de ejemplo para ver Finanzas con datos.
+if (process.env.DEMO === '1') {
+  const db = env.DB.raw;
+  const pays = ['Efectivo', 'Efectivo', 'Transferencia', 'Tarjeta'];
+  const now = Date.now();
+  for (let d = 56; d >= 1; d--) {
+    const ts = now - d * 86400000;
+    const date = new Date(ts - 6 * 3600000).toISOString().slice(0, 10);
+    for (const [hotel, n, rate] of [['prado', 4 + (d % 5), 650], ['prokinto', 2 + (d % 4), 800]]) {
+      for (let i = 0; i < n; i++) {
+        const nights = 1 + (i % 3);
+        db.prepare(`INSERT INTO sales (hotel_id, local_date, ts, concept, kind, nights, amount, pay) VALUES (?,?,?,?,?,?,?,?)`)
+          .run(hotel, date, ts + i * 1000, 'Hab. (ejemplo)', 'hospedaje', nights, nights * rate, pays[(d + i) % 4]);
+      }
+      if (hotel === 'prado' && d % 3 === 0) db.prepare(`INSERT INTO sales (hotel_id, local_date, ts, concept, kind, hours, amount, pay) VALUES (?,?,?,?,?,?,?,?)`).run(hotel, date, ts, 'Por hora (ejemplo)', 'hora', 3, 350, 'Efectivo');
+    }
+  }
+  console.log('Datos de ejemplo cargados');
+}

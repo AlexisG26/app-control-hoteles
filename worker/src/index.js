@@ -6,7 +6,7 @@ import {
 } from './auth.js';
 import {
   listRooms, checkIn, extendStay, checkOut, cleanStart, cleanFinish, reportIssue, listIssues, resolveIssue, issuePhoto,
-  addExtraSale, listSales, voidSale, poUpdate, pendingPOs, overview, financeReport, getHotel, audit, PAY,
+  addExtraSale, listSales, voidSale, poUpdate, pendingPOs, overview, financeReport, compareFinance, getHotel, audit, PAY,
 } from './ops.js';
 import { runScheduled } from './cron.js';
 import { handleMcp } from './mcp.js';
@@ -67,6 +67,7 @@ on('GET', '/api/me', async ({ env, user }) => {
   });
 });
 on('GET', '/api/overview', async ({ env, user }) => json(await overview(env, user, hotelsOf(user, await allHotels(env)))));
+on('GET', '/api/finance/compare', async ({ env, user, url }) => json(await compareFinance(env, user, hotelsOf(user, await allHotels(env)), url.searchParams.get('from'), url.searchParams.get('to'))));
 
 // ---------- Habitaciones y estadías ----------
 on('GET', '/api/hotels/:hotel/rooms', async ({ env, user, p }) => json(await listRooms(env, user, p.hotel)));

@@ -371,10 +371,11 @@ export async function hotelSnapshot(env, hotel) {
   };
 }
 
+/** Panel global: solo gerencia (dueños). */
 export async function overview(env, user, hotels) {
-  const visible = hotels.filter((h) => user.is_owner || can(user, h.id, 'contabilidad'));
+  if (!user.is_owner) throw forbidden('El panel global es solo para gerencia.');
   const list = [];
-  for (const h of visible) list.push(await hotelSnapshot(env, h));
+  for (const h of hotels) list.push(await hotelSnapshot(env, h));
   const sum = (f) => list.reduce((a, x) => a + f(x), 0);
   return {
     date: localDate(env), time: localTime(env),
@@ -409,6 +410,45 @@ export async function financeReport(env, user, hotelId, from, to) {
     avg_day: tot[0].t / days,
     occupancy_nights_pct: rooms.n ? Math.round((tot[0].nights / (rooms.n * days)) * 100) : 0,
     by_day: byDay, by_pay: byPay, by_kind: byKind, by_user: byUser,
+  };
+}
+
+/**
+ * Análisis financiero comparado (solo gerencia): cuánto generó cada hotel en el período,
+ * su parte del total y la variación contra el período anterior de la misma duración.
+ */
+export async function compareFinance(env, user, hotels, from, to) {
+  if (!user.is_owner) throw forbidden('El análisis global es solo para gerencia.');
+  if (!isDate(from) || !isDate(to) || from > to) throw bad('Rango de fechas inválido.');
+  const len = daysBetween(from, to) + 1;
+  const prevTo = addDays(from, -1);
+  const prevFrom = addDays(from, -len);
+  const out = [];
+  for (const h of hotels) {
+    const cur = await financeReport(env, user, h.id, from, to);
+    const prev = await env.DB.prepare(
+      'SELECT COALESCE(SUM(amount),0) AS t FROM sales WHERE hotel_id = ? AND voided_at IS NULL AND local_date BETWEEN ? AND ?',
+    ).bind(h.id, prevFrom, prevTo).first();
+    const lodging = cur.by_kind.find((k) => k.k === 'hospedaje') || { t: 0, nights: 0 };
+    out.push({
+      id: h.id, name: h.name,
+      total: cur.total, count: cur.count, nights: cur.nights,
+      prev_total: prev.t,
+      delta_pct: prev.t ? Math.round(((cur.total - prev.t) / prev.t) * 100) : null,
+      avg_night: lodging.nights ? lodging.t / lodging.nights : 0,
+      avg_day: cur.avg_day,
+      occupancy_pct: cur.occupancy_nights_pct,
+      by_pay: cur.by_pay, by_kind: cur.by_kind, by_day: cur.by_day, by_user: cur.by_user,
+    });
+  }
+  const total = out.reduce((a, x) => a + x.total, 0);
+  const prevTotal = out.reduce((a, x) => a + x.prev_total, 0);
+  out.forEach((x) => { x.share_pct = total ? Math.round((x.total / total) * 100) : 0; });
+  return {
+    from, to, prev_from: prevFrom, prev_to: prevTo, days: len,
+    total, prev_total: prevTotal,
+    delta_pct: prevTotal ? Math.round(((total - prevTotal) / prevTotal) * 100) : null,
+    hotels: out,
   };
 }
 
