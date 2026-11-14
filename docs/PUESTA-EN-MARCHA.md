@@ -44,7 +44,7 @@ En el repositorio: **Settings → Secrets and variables → Actions**.
 |---|---|
 | `CLOUDFLARE_API_TOKEN` | Token del paso 1.4 |
 | `CLOUDFLARE_ACCOUNT_ID` | Account ID del paso 1.3 |
-| `OWNER_EMAIL` | Tu correo (el del dueño). Es el primer usuario que puede entrar. |
+| `OWNER_EMAIL` | Correos de gerencia, con acceso total. Si son varios, sepáralos con coma: `uno@gmail.com,otro@gmail.com` |
 | `RESEND_API_KEY` | Llave del paso 2.1 |
 | `MAIL_FROM` | Remitente del paso 2.3 |
 | `VAPID_PUBLIC_KEY` | Del paso 3 |

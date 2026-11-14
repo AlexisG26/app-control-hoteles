@@ -810,7 +810,7 @@ async function viewUsuarios() {
     <p class="hint">Cada persona entra con su correo. Dale solo los roles que necesita en cada hotel.</p>
     <section class="panel"><ul class="list">${users.map((u) => `
       <li><div class="d"><b>${esc(u.name)}</b> ${u.active ? '' : '<span class="tag t-bad">Desactivado</span>'}<small>${esc(u.email)}<br>${esc(desc(u))}</small></div><span></span>
-      ${u.is_owner ? '<span></span>' : `<button class="mini" data-edit="${u.id}">Editar</button>`}</li>`).join('')}</ul></section>`;
+      <button class="mini" data-edit="${u.id}">Editar</button></li>`).join('')}</ul></section>`;
   $('add').onclick = () => userSheet(null);
   app.querySelectorAll('[data-edit]').forEach((b) => { b.onclick = () => userSheet(users.find((u) => u.id === +b.dataset.edit)); });
 
@@ -819,17 +819,18 @@ async function viewUsuarios() {
     sheet(`<h3>${u ? 'Editar usuario' : 'Nuevo usuario'}</h3>
       <label>Nombre<input id="u-n" value="${esc(u?.name || '')}" autocomplete="off"></label>
       <label>Correo<input id="u-e" type="email" value="${esc(u?.email || '')}" ${u ? 'disabled' : ''}></label>
-      ${H.map((h) => `<fieldset class="panel" style="padding:10px 12px;gap:6px"><legend class="eyebrow">${esc(h.name)}</legend>
+      ${u?.is_owner ? '<p class="hint">Gerencia: acceso total a todos los hoteles.</p>' : ''}
+      ${u?.is_owner ? '' : H.map((h) => `<fieldset class="panel" style="padding:10px 12px;gap:6px"><legend class="eyebrow">${esc(h.name)}</legend>
         ${Object.entries(roleLabel).map(([r, l]) => `<label class="check"><input type="checkbox" data-h="${h.id}" data-r="${r}" ${has(h.id, r) ? 'checked' : ''}> ${l}</label>`).join('')}</fieldset>`).join('')}
-      <p class="hint">Administración incluye todos los roles de ese hotel.</p>
+      ${u?.is_owner ? '' : '<p class="hint">Administración incluye todos los roles de ese hotel.</p>'}
       ${u ? `<label>Chat de Telegram (opcional)<input id="u-t" value="${esc(u.telegram_chat_id || '')}" inputmode="numeric" placeholder="Para avisos por Telegram"></label>` : ''}
       <div class="err" id="err"></div>
       <div class="row"><button class="btn ghost" id="c">Cancelar</button><button class="btn" id="ok">${u ? 'Guardar' : 'Crear usuario'}</button></div>
-      ${u ? `<button class="btn ${u.active ? 'warn' : 'ghost'}" id="tog">${u.active ? 'Desactivar usuario' : 'Reactivar usuario'}</button>` : ''}`, () => {
+      ${u && !u.is_owner ? `<button class="btn ${u.active ? 'warn' : 'ghost'}" id="tog">${u.active ? 'Desactivar usuario' : 'Reactivar usuario'}</button>` : ''}`, () => {
       $('c').onclick = closeSheet;
       const ms = () => [...document.querySelectorAll('[data-h]:checked')].map((x) => ({ hotel_id: x.dataset.h, role: x.dataset.r }));
       $('ok').onclick = (e) => act(e.target, () => (u
-        ? api('PATCH', `/api/users/${u.id}`, { name: $('u-n').value, memberships: ms(), telegram_chat_id: $('u-t').value })
+        ? api('PATCH', `/api/users/${u.id}`, { name: $('u-n').value, telegram_chat_id: $('u-t').value, ...(u.is_owner ? {} : { memberships: ms() }) })
         : api('POST', '/api/users', { name: $('u-n').value, email: $('u-e').value, memberships: ms() })), u ? 'Usuario actualizado' : 'Usuario creado. Ya puede entrar con su correo.');
       if ($('tog')) $('tog').onclick = (e) => act(e.target, () => api('PATCH', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Usuario desactivado' : 'Usuario reactivado');
     });

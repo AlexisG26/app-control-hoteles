@@ -23,7 +23,7 @@ const vapidPub = b64u(await webcrypto.subtle.exportKey('raw', vapid.publicKey));
 const env = {
   DB: createD1(new URL('../migrations/', import.meta.url)),
   ALLOWED_ORIGIN: ORIGIN, RP_ID: 'dueno.github.io', TZ_OFFSET_MIN: '-360', DEV_MODE: '1',
-  OWNER_EMAIL: 'alexis@example.com', OWNER_NAME: 'Alexis Gutiérrez', AUTH_PEPPER: 'test',
+  OWNER_EMAIL: 'alexis@example.com, Socio@Example.com', OWNER_NAME: 'Alexis Gutiérrez', AUTH_PEPPER: 'test',
   VAPID_PUBLIC_KEY: vapidPub, VAPID_PRIVATE_JWK: JSON.stringify(await webcrypto.subtle.exportKey('jwk', vapid.privateKey)),
   VAPID_SUBJECT: 'mailto:alexis@example.com',
 };
@@ -54,6 +54,14 @@ test('el dueño entra con código por correo', async () => {
   assert.equal(me.data.user.is_owner, true);
   assert.equal(me.data.hotels.length, 2);
   assert.equal(me.headers.get('access-control-allow-origin'), ORIGIN);
+});
+
+test('gerencia: un segundo correo de OWNER_EMAIL también entra como dueño', async () => {
+  const t = await login('socio@example.com');
+  const me = await api('GET', '/api/me', { token: t });
+  assert.equal(me.data.user.is_owner, true);
+  assert.equal(me.data.user.name, 'Gerencia');
+  assert.equal(me.data.hotels.length, 2);
 });
 
 test('un correo no registrado no recibe código ni revela nada', async () => {

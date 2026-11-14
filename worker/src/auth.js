@@ -78,16 +78,27 @@ export function hotelsOf(user, allHotels) {
 
 const normEmail = (e) => String(e || '').trim().toLowerCase();
 const isEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) && e.length <= 200;
+export const ownerEmails = (env) => String(env.OWNER_EMAIL || '').split(',').map(normEmail).filter(Boolean);
+// OWNER_NAME puede llevar un nombre por correo, en el mismo orden y separados por coma.
+function ownerName(env, email) {
+  const names = String(env.OWNER_NAME || '').split(',').map((s) => s.trim());
+  return names[ownerEmails(env).indexOf(email)] || 'Gerencia';
+}
 
 export async function sendLoginCode(env, emailRaw) {
   const email = normEmail(emailRaw);
   if (!isEmail(email)) throw bad('Escribe un correo válido.');
 
-  let user = await env.DB.prepare('SELECT id, active FROM users WHERE email = ?').bind(email).first();
-  // Primer arranque: el correo del dueño se crea solo.
-  if (!user && env.OWNER_EMAIL && normEmail(env.OWNER_EMAIL) === email) {
-    await env.DB.prepare('INSERT INTO users (email, name, is_owner, active, created_at) VALUES (?,?,1,1,?)')
-      .bind(email, env.OWNER_NAME || 'Dueño', Date.now()).run();
+  let user = await env.DB.prepare('SELECT id, active, is_owner FROM users WHERE email = ?').bind(email).first();
+  // Gerencia: los correos de OWNER_EMAIL (separados por coma) tienen acceso total.
+  // Se crean solos la primera vez y siempre quedan como dueños activos.
+  if (ownerEmails(env).includes(email)) {
+    if (!user) {
+      await env.DB.prepare('INSERT INTO users (email, name, is_owner, active, created_at) VALUES (?,?,1,1,?)')
+        .bind(email, ownerName(env, email), Date.now()).run();
+    } else if (!user.is_owner || !user.active) {
+      await env.DB.prepare('UPDATE users SET is_owner = 1, active = 1 WHERE email = ?').bind(email).run();
+    }
     user = { active: 1 };
   }
   // Respuesta igual exista o no, para no revelar qué correos están registrados.
