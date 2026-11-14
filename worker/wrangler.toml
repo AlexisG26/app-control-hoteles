@@ -10,8 +10,8 @@ crons = ["*/5 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "control-hoteles"
-# Reemplaza con el id que te da: npx wrangler d1 create control-hoteles
-database_id = "REEMPLAZAR_CON_ID_DE_D1"
+# Id de la base D1 "control-hoteles" en Cloudflare
+database_id = "feea2b90-12b7-4211-bf6c-042650d0b87b"
 migrations_dir = "migrations"
 
 # Fotos de problemas en habitaciones (R2). D1 guarda la referencia a cada foto.

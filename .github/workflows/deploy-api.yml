@@ -43,7 +43,7 @@ jobs:
             if [ -z "${!v}" ]; then echo "::error::Falta la variable $v en el repositorio."; exit 1; fi
           done
           host="${PAGES_ORIGIN#https://}"
-          sed -i "s|REEMPLAZAR_CON_ID_DE_D1|$D1_DATABASE_ID|" wrangler.toml
+          sed -i -E "s|database_id = \"[^\"]*\"|database_id = \"$D1_DATABASE_ID\"|" wrangler.toml
           sed -i "s|https://TU-USUARIO.github.io|$PAGES_ORIGIN|" wrangler.toml
           sed -i "s|RP_ID = \"TU-USUARIO.github.io\"|RP_ID = \"$host\"|" wrangler.toml
           if [ -n "$VAPID_SUBJECT" ]; then sed -i "s|mailto:TU-CORREO@ejemplo.com|$VAPID_SUBJECT|" wrangler.toml; fi
