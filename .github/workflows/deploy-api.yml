@@ -11,6 +11,11 @@ on:
 permissions:
   contents: read
 
+# Una publicación a la vez: evita que dos corridas apliquen la misma migración.
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
 jobs:
   test:
     runs-on: ubuntu-latest
