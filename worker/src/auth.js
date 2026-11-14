@@ -90,7 +90,7 @@ export async function sendLoginCode(env, emailRaw) {
   if (!isEmail(email)) throw bad('Escribe un correo válido.');
 
   let user = await env.DB.prepare('SELECT id, active, is_owner FROM users WHERE email = ?').bind(email).first();
-  // Gerencia: los correos de OWNER_EMAIL (separados por coma) tienen acceso total.
+  // Gerencia: cada correo de OWNER_EMAIL (separados por coma) tiene acceso total.
   // Se crean solos la primera vez y siempre quedan como dueños activos.
   if (ownerEmails(env).includes(email)) {
     if (!user) {
