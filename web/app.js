@@ -634,6 +634,14 @@ function bindVoid() {
   });
 }
 
+// Tipos de habitación y tarifas (clientes vs. empresas de crédito)
+const roomTypes = (h) => [...new Set([...Object.keys(h.rates || {}), ...Object.keys(h.company_rates || {})])];
+const isCredit = (h, co) => !!co && (h.companies || []).some((x) => x.toLowerCase() === String(co).trim().toLowerCase());
+const typeRate = (h, t, credit) => {
+  const v = credit ? h.company_rates?.[t] : h.rates?.[t];
+  return Number.isFinite(v) ? v : null;
+};
+
 function roomSheet(h, r) {
   const issueBtn = '<button class="btn ghost" id="issue">Reportar un problema</button>';
   if (r.status === 'libre') {
@@ -644,9 +652,10 @@ function roomSheet(h, r) {
         <datalist id="companies">${(h.companies || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
       ${hourOK ? `<div class="seg" role="group" aria-label="Tipo"><button type="button" id="ty-n" aria-pressed="true">Por noche</button><button type="button" id="ty-h" aria-pressed="false">Por hora</button></div>` : ''}
       <div id="g-n" class="stack">
-        ${Object.keys(h.rates || {}).length ? `<div class="seg types" role="group" aria-label="Tipo de habitación">${Object.entries(h.rates).map(([t, v], i) => `<button type="button" data-type="${esc(t)}" data-rate="${v}" aria-pressed="${i === 0}">${esc(t)}<small>${fmt(v)}</small></button>`).join('')}</div>` : ''}
+        ${roomTypes(h).length ? `<div class="seg types" role="group" aria-label="Tipo de habitación">${roomTypes(h).map((t, i) => `<button type="button" data-type="${esc(t)}" aria-pressed="${i === 0}">${esc(t)}<small data-tprice="${esc(t)}"></small></button>`).join('')}</div>` : ''}
         <div class="row"><label>Noches<input id="f-n" type="number" min="1" value="1" inputmode="numeric"></label>
-        <label>Precio por noche (L)<input id="f-p" type="number" min="0" step="any" inputmode="decimal" value="${Object.values(h.rates || {})[0] ?? LS.get('ch-rate-' + h.id, h.default_rate)}"></label></div>
+        <label>Precio por noche (L)<input id="f-p" type="number" min="0" step="any" inputmode="decimal" value="${LS.get('ch-rate-' + h.id, '')}"></label></div>
+        <p class="hint" id="rateHint"></p>
         ${h.tax_isv || h.tax_tourism ? `<p class="hint">Precio con ISV ${h.tax_isv}% y Turismo ${h.tax_tourism}% incluidos.</p>` : ''}
       </div>
       <div class="row" id="g-h" hidden><label>Horas<input id="f-h" type="number" min="1" value="${LS.get('ch-hours', 3)}" inputmode="numeric"></label>
@@ -656,23 +665,45 @@ function roomSheet(h, r) {
       <div class="row"><button class="btn ghost" id="c">Cancelar</button><button class="btn" id="ok">Registrar entrada</button></div>
       ${issueBtn}`, () => {
       let hourly = false;
-      let roomType = Object.keys(h.rates || {})[0] || null;
+      let roomType = roomTypes(h)[0] || null;
+      // Precio según tipo: tarifa de empresa si es empresa de crédito; si no, tarifa de clientes; si no hay, el último usado para ese tipo.
+      const applyRate = (fromTypeClick) => {
+        const credit = isCredit(h, $('f-co').value);
+        const hidePrice = credit && !has(h.id, 'contabilidad'); // recepción no ve precios de empresas
+        $('f-p').closest('label').hidden = hidePrice;
+        $('sheetHost').querySelectorAll('[data-tprice]').forEach((el) => {
+          const v = typeRate(h, el.dataset.tprice, credit);
+          el.textContent = v !== null ? fmt(v) : '';
+        });
+        const v = roomType ? typeRate(h, roomType, credit) : null;
+        if (v !== null) $('f-p').value = v;
+        else if (fromTypeClick) $('f-p').value = LS.get(`ch-rate-${h.id}-${roomType}`, $('f-p').value);
+        const tax = h.tax_isv || h.tax_tourism ? ` Impuestos incluidos (ISV ${h.tax_isv}% y Turismo ${h.tax_tourism}%).` : '';
+        $('rateHint').textContent = (hidePrice ? 'Empresa de crédito: el sistema aplica su tarifa.' : credit ? `Tarifa de empresa de crédito.` : (v !== null ? 'Tarifa de clientes.' : 'Cliente: escribe el precio acordado.')) + tax;
+        upd();
+      };
       $('sheetHost').querySelectorAll('[data-type]').forEach((t) => {
         t.onclick = () => {
-          roomType = t.dataset.type; $('f-p').value = t.dataset.rate;
+          roomType = t.dataset.type;
           $('sheetHost').querySelectorAll('[data-type]').forEach((x) => x.setAttribute('aria-pressed', x === t));
-          upd();
+          applyRate(true);
         };
       });
-      // Si es empresa de crédito, sugerir pago pendiente
-      $('f-co').onchange = () => { if ((h.companies || []).includes($('f-co').value.trim()) && $('f-pay').value === 'Efectivo') { $('f-pay').value = 'Pendiente'; $('f-pay').dispatchEvent(new Event('change')); } };
+      // Si es empresa de crédito: tarifa de empresa y pago pendiente
+      $('f-co').oninput = () => applyRate(false);
+      $('f-co').onchange = () => {
+        if (isCredit(h, $('f-co').value) && $('f-pay').value === 'Efectivo') { $('f-pay').value = 'Pendiente'; $('f-pay').dispatchEvent(new Event('change')); }
+        applyRate(false);
+      };
+      setTimeout(() => applyRate(true), 0);
       const upd = () => {
         if (hourly) {
           const hrs = Math.max(1, +$('f-h').value || 1);
           $('calc').textContent = `Total: ${fmt(+$('f-hm').value || 0)} · Hasta las ${hnTime(Date.now() + hrs * 3600000)} · la salida se registra a mano`;
         } else {
           const n = Math.max(1, +$('f-n').value || 1);
-          $('calc').textContent = `Total: ${fmt(n * (+$('f-p').value || 0))} · Salida automática: ${hnDay(parseD(addDays(hnDate(), n)))}, ${h.checkout_time}`;
+          const hidden = $('f-p').closest('label').hidden;
+          $('calc').textContent = `${hidden ? 'Tarifa de empresa' : `Total: ${fmt(n * (+$('f-p').value || 0))}`} · Salida automática: ${hnDay(parseD(addDays(hnDate(), n)))}, ${h.checkout_time}`;
         }
       };
       const setType = (x) => { hourly = x; $('g-n').hidden = x; $('g-h').hidden = !x; $('ty-n').setAttribute('aria-pressed', !x); $('ty-h').setAttribute('aria-pressed', x); upd(); };
@@ -684,7 +715,13 @@ function roomSheet(h, r) {
       $('ok').onclick = (e) => act(e.target, async () => {
         const b = { room_id: r.id, guest: $('f-g').value, company: $('f-co').value.trim() || undefined, ...payBody() };
         if (hourly) { Object.assign(b, { kind: 'hora', hours: +$('f-h').value, amount: +$('f-hm').value }); LS.set('ch-hours', +$('f-h').value); LS.set('ch-hamt', +$('f-hm').value); }
-        else { Object.assign(b, { kind: 'noche', nights: +$('f-n').value, rate: +$('f-p').value, room_type: roomType || undefined }); LS.set('ch-rate-' + h.id, +$('f-p').value); }
+        else {
+          const hidePrice = $('f-p').closest('label').hidden;
+          if (!hidePrice && !(+$('f-p').value > 0)) throw new Error('Escribe el precio por noche.');
+          Object.assign(b, { kind: 'noche', nights: +$('f-n').value, rate: hidePrice ? undefined : +$('f-p').value, room_type: roomType || undefined });
+          LS.set('ch-rate-' + h.id, +$('f-p').value);
+          if (roomType && !isCredit(h, $('f-co').value)) LS.set(`ch-rate-${h.id}-${roomType}`, +$('f-p').value);
+        }
         await api('POST', `/api/hotels/${h.id}/checkin`, b);
       }, `Entrada registrada en la ${r.number}`);
     });
@@ -698,7 +735,8 @@ function roomSheet(h, r) {
       <h3 style="font-size:17px;margin-top:6px">${isH ? 'Agregar tiempo' : 'Extender estadía'}</h3>
       <div class="row">${isH
         ? '<label>Horas extra<input id="f-x" type="number" min="1" value="1" inputmode="numeric"></label><label>Monto (L)<input id="f-xm" type="number" min="0" step="any" inputmode="decimal"></label>'
-        : `<label>Noches extra<input id="f-x" type="number" min="1" value="1" inputmode="numeric"></label><label>Precio por noche (L)<input id="f-xm" type="number" min="0" step="any" inputmode="decimal" value="${r.rate ?? h.default_rate}"></label>`}</div>
+        : `<label>Noches extra<input id="f-x" type="number" min="1" value="1" inputmode="numeric"></label>${r.credit ? '' : `<label>Precio por noche (L)<input id="f-xm" type="number" min="0" step="any" inputmode="decimal" value="${r.rate ?? h.default_rate}"></label>`}`}</div>
+      ${r.credit ? '<p class="hint">Empresa de crédito: el sistema aplica su tarifa.</p>' : ''}
       ${payFields(h)}<div class="err" id="err"></div>
       <div class="row"><button class="btn ghost" id="c">Cerrar</button><button class="btn" id="ext">${isH ? 'Cobrar y agregar' : 'Cobrar y extender'}</button></div>
       ${issueBtn}`, () => {
@@ -712,7 +750,7 @@ function roomSheet(h, r) {
       };
       $('out').onclick = (e) => act(e.target, () => api('POST', `/api/stays/${r.stay_id}/checkout`), `Hab. ${r.number} enviada a limpieza`);
       $('ext').onclick = (e) => act(e.target, () => api('POST', `/api/stays/${r.stay_id}/extend`,
-        isH ? { hours: +$('f-x').value, amount: +$('f-xm').value, ...payBody() } : { nights: +$('f-x').value, rate: +$('f-xm').value, ...payBody() }),
+        isH ? { hours: +$('f-x').value, amount: +$('f-xm').value, ...payBody() } : { nights: +$('f-x').value, rate: $('f-xm') ? +$('f-xm').value : undefined, ...payBody() }),
       isH ? 'Tiempo agregado' : 'Estadía extendida');
     });
   } else {
@@ -1009,7 +1047,8 @@ async function viewAjustes() {
       ${me.hotels.map((h) => `<fieldset class="panel" style="gap:10px"><legend class="eyebrow">${esc(h.name)}</legend>
         <div class="row"><label>Hora de salida<input type="time" id="co-${h.id}" value="${esc(h.checkout_time)}"></label>
           <label>Precio general por noche (L)<input type="number" id="rt-${h.id}" value="${h.default_rate}" inputmode="decimal"></label></div>
-        <label>Tarifas por tipo (una por línea: Tipo = precio)<textarea id="rates-${h.id}" rows="3" placeholder="Sencilla = 1400">${esc(Object.entries(h.rates || {}).map(([k, v]) => `${k} = ${v}`).join('\n'))}</textarea></label>
+        <label>Tarifas para clientes (una por línea: Tipo = precio; deja el precio vacío si se acuerda en el momento)<textarea id="rates-${h.id}" rows="3" placeholder="Doble = 1550">${esc(Object.entries(h.rates || {}).map(([k, v]) => `${k} = ${v ?? ''}`).join('\n'))}</textarea></label>
+        <label>Tarifas para empresas de crédito<textarea id="crates-${h.id}" rows="3" placeholder="Sencilla = 1400">${esc(Object.entries(h.company_rates || {}).map(([k, v]) => `${k} = ${v}`).join('\n'))}</textarea></label>
         <label>Empresas con crédito (separadas por coma)<input id="comp-${h.id}" value="${esc((h.companies || []).join(', '))}"></label>
         <div class="row"><label>ISV incluido (%)<input type="number" id="isv-${h.id}" value="${h.tax_isv}" inputmode="decimal"></label>
           <label>Turismo incluido (%)<input type="number" id="tur-${h.id}" value="${h.tax_tourism}" inputmode="decimal"></label></div>
@@ -1033,11 +1072,16 @@ async function viewAjustes() {
   app.querySelectorAll('[data-savehotel]').forEach((b) => {
     b.onclick = async () => {
       const id = b.dataset.savehotel;
-      const rates = {};
-      $('rates-' + id).value.split('\n').forEach((l) => { const m = l.match(/^\s*(.+?)\s*[=:]\s*([\d.,]+)\s*$/); if (m) rates[m[1]] = Number(m[2].replace(/,/g, '')); });
+      const parseRates = (txt) => {
+        const o = {};
+        txt.split('\n').forEach((l) => { const m = l.match(/^\s*(.+?)\s*[=:]\s*([\d.,]*)\s*$/); if (m) o[m[1]] = m[2] ? Number(m[2].replace(/,/g, '')) : null; });
+        return o;
+      };
+      const rates = parseRates($('rates-' + id).value);
+      const company_rates = parseRates($('crates-' + id).value);
       const companies = $('comp-' + id).value.split(',').map((x) => x.trim()).filter(Boolean);
       try {
-        await api('PATCH', `/api/hotels/${id}`, { checkout_time: $('co-' + id).value, default_rate: +$('rt-' + id).value, rates, companies, tax_isv: +$('isv-' + id).value, tax_tourism: +$('tur-' + id).value });
+        await api('PATCH', `/api/hotels/${id}`, { checkout_time: $('co-' + id).value, default_rate: +$('rt-' + id).value, rates, company_rates, companies, tax_isv: +$('isv-' + id).value, tax_tourism: +$('tur-' + id).value });
         me = null; toast('Hotel actualizado'); render();
       }
       catch (e) { toast(e.message); }

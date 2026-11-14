@@ -19,8 +19,23 @@ export async function getHotel(env, id) {
 /** Tarifas por tipo y empresas de crédito del hotel (guardadas como JSON). */
 export function hotelConfig(h) {
   const parse = (v, d) => { try { return v ? JSON.parse(v) : d; } catch { return d; } };
-  return { rates: parse(h.rates, {}), companies: parse(h.companies, []) };
+  return { rates: parse(h.rates, {}), company_rates: parse(h.company_rates, {}), companies: parse(h.companies, []) };
 }
+/** Tarifa por noche de un tipo: la de empresa si es una empresa de crédito; si no, la de clientes. */
+export function rateFor(h, roomType, company) {
+  const c = hotelConfig(h);
+  const isCredit = company && c.companies.some((x) => x.toLowerCase() === String(company).toLowerCase());
+  if (roomType && isCredit && Number.isFinite(c.company_rates[roomType])) return c.company_rates[roomType];
+  if (roomType && Number.isFinite(c.rates[roomType])) return c.rates[roomType];
+  return null;
+}
+/** ¿La empresa es de crédito en este hotel? */
+export function isCreditCompany(h, company) {
+  return !!company && hotelConfig(h).companies.some((x) => x.toLowerCase() === String(company).trim().toLowerCase());
+}
+/** Los precios de empresas de crédito solo los ve contabilidad (y gerencia/administración). */
+const seesCompanyPrices = (user, hotelId) => can(user, hotelId, 'contabilidad');
+
 async function getRoom(env, roomId) {
   const r = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(Number(roomId)).first();
   if (!r) throw notFound('Habitación no encontrada.');
@@ -72,8 +87,11 @@ export async function listRooms(env, user, hotelId) {
        FROM rooms r LEFT JOIN stays s ON s.id = r.current_stay_id
       WHERE r.hotel_id = ? ORDER BY r.sort, r.number`,
   ).bind(hotelId).all();
+  const hotel = await getHotel(env, hotelId);
+  const showCompany = seesCompanyPrices(user, hotelId);
   return results.map((r) => {
     if (!showGuest) { r.guest = r.guest ? 'Ocupada' : null; r.rate = null; r.pending_balance = 0; r.company = null; }
+    else if (!showCompany && isCreditCompany(hotel, r.company)) { r.rate = null; r.pending_balance = 0; r.credit = true; }
     return r;
   });
 }
@@ -89,8 +107,7 @@ export async function checkIn(env, user, hotelId, b) {
   const guest = cleanStr(b.guest, 120) || 'Huésped';
   const kind = b.kind === 'hora' ? 'hora' : 'noche';
   const p = payInfo(hotel, b);
-  const { rates } = hotelConfig(hotel);
-  const roomType = b.room_type && rates[b.room_type] !== undefined ? b.room_type : (cleanStr(b.room_type, 30) || null);
+  const roomType = cleanStr(b.room_type, 30) || null;
   const company = cleanStr(b.company, 80) || null;
   const now = Date.now();
   let due, nights = 0, hours = 0, amount, rate = null, concept;
@@ -105,7 +122,10 @@ export async function checkIn(env, user, hotelId, b) {
   } else {
     nights = posInt(b.nights, 120);
     // Precio: el escrito; si no, la tarifa del tipo de habitación; si no, la tarifa general del hotel.
-    rate = money(b.rate ?? (roomType && rates[roomType] !== undefined ? rates[roomType] : hotel.default_rate));
+    const credit = isCreditCompany(hotel, company);
+    // Empresa de crédito: si quien registra no es contabilidad, se aplica siempre la tarifa de empresa.
+    const typed = credit && !seesCompanyPrices(user, hotel.id) ? undefined : b.rate;
+    rate = money(typed ?? rateFor(hotel, roomType, company) ?? hotel.default_rate);
     amount = Math.round(nights * rate * 100) / 100;
     due = localToUtc(env, addDays(localDate(env, now), nights), hotel.checkout_time);
     concept = `Hab. ${room.number} · ${guest}${company ? ` · ${company}` : ''}`;
@@ -150,7 +170,8 @@ export async function extendStay(env, user, stayId, b) {
     concept = `Hab. ${room.number} · ${s.guest} (por hora, +${hours} h)`;
   } else {
     nights = posInt(b.nights, 120);
-    const rate = money(b.rate ?? s.rate ?? (s.room_type && hotelConfig(hotel).rates[s.room_type]) ?? hotel.default_rate);
+    const typed = isCreditCompany(hotel, s.company) && !seesCompanyPrices(user, hotel.id) ? undefined : b.rate;
+    const rate = money(typed ?? s.rate ?? rateFor(hotel, s.room_type, s.company) ?? hotel.default_rate);
     amount = Math.round(nights * rate * 100) / 100;
     const base = Math.max(s.due_out_at, localToUtc(env, localDate(env), hotel.checkout_time));
     due = localToUtc(env, addDays(localDate(env, base), nights), hotel.checkout_time);
@@ -309,7 +330,9 @@ export async function listSales(env, user, hotelId, from, to) {
        LEFT JOIN users u ON u.id = s.created_by LEFT JOIN users v ON v.id = s.voided_by
       WHERE s.hotel_id = ? AND s.local_date BETWEEN ? AND ? ORDER BY s.ts DESC LIMIT 2000`,
   ).bind(hotelId, from, to).all();
-  return results;
+  if (seesCompanyPrices(user, hotelId)) return results;
+  const hotel = await getHotel(env, hotelId);
+  return results.filter((x) => !isCreditCompany(hotel, x.company));
 }
 
 export async function voidSale(env, user, saleId, b) {
@@ -347,6 +370,10 @@ export async function listPending(env, user, hotelId) {
     `SELECT s.*, u.name AS by_name FROM sales s LEFT JOIN users u ON u.id = s.created_by
       WHERE s.hotel_id = ? AND s.pay = 'Pendiente' AND s.voided_at IS NULL AND s.settled_at IS NULL ORDER BY s.ts ASC`,
   ).bind(hotelId).all();
+  if (!seesCompanyPrices(user, hotelId)) {
+    const hotel = await getHotel(env, hotelId);
+    for (let i = results.length - 1; i >= 0; i--) if (isCreditCompany(hotel, results[i].company)) results.splice(i, 1);
+  }
   if (!results.length) return [];
   const ids = results.map((r) => r.id);
   const { results: pays } = await env.DB.prepare(

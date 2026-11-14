@@ -350,7 +350,8 @@ test('pago pendiente: se cobra por noches con comprobante y no cuenta como ingre
 test('tarifas por tipo, empresa de crédito e impuestos incluidos', async () => {
   const me = await api('GET', '/api/me', { token: owner });
   const prado = me.data.hotels.find((h) => h.id === 'prado');
-  assert.deepEqual(prado.rates, { Sencilla: 1400, Doble: 1700, Triple: 2000 });
+  assert.deepEqual(prado.company_rates, { Sencilla: 1400, Doble: 1700, Triple: 2000 });
+  assert.deepEqual(prado.rates, { Sencilla: null, Doble: null, Triple: null });
   assert.ok(prado.companies.includes('Emsula'));
   // Sin precio escrito: toma la tarifa del tipo
   const r = await api('POST', '/api/hotels/prado/checkin', { token: owner, body: { room_id: await roomId('prado', '12'), guest: 'Nelson Alemán', company: 'Emsula', room_type: 'Triple', kind: 'noche', nights: 2, pay: 'Pendiente' } });
@@ -361,6 +362,28 @@ test('tarifas por tipo, empresa de crédito e impuestos incluidos', async () => 
   assert.match(pend.concept, /Emsula/);
   const rooms = (await api('GET', '/api/hotels/prado/rooms', { token: owner })).data;
   assert.equal(rooms.find((x) => x.number === '12').room_type, 'Triple');
+  // Cliente normal (sin empresa): la tarifa de empresa NO aplica; sin tarifa de clientes usa el precio escrito
+  const cli = await api('POST', '/api/hotels/prado/checkin', { token: owner, body: { room_id: await roomId('prado', '13'), guest: 'Elvia Paz', room_type: 'Doble', kind: 'noche', nights: 1, rate: 1550, pay: 'Efectivo' } });
+  assert.equal(cli.status, 200);
+  const sales13 = (await api('GET', `/api/hotels/prado/sales?from=${localDate(env)}&to=${localDate(env)}`, { token: owner })).data.find((x) => x.room === '13');
+  assert.equal(sales13.amount, 1550);
+  // Recepción no ve precios de empresas de crédito, ni puede cambiarlos
+  const rmeAll = (await api('GET', '/api/me', { token: limpia })).data; // limpieza no tiene contabilidad
+  assert.equal(rmeAll.hotels.find((h) => h.id === 'prado').company_rates.Triple, null);
+  const recU = await api('POST', '/api/users', { token: owner, body: { email: 'rec2@example.com', name: 'Recep Dos', memberships: [{ hotel_id: 'prado', role: 'recepcion' }] } });
+  assert.equal(recU.status, 200);
+  const rec2 = await login('rec2@example.com');
+  assert.equal((await api('GET', '/api/me', { token: rec2 })).data.hotels[0].company_rates.Sencilla, null);
+  const chk = await api('POST', '/api/hotels/prado/checkin', { token: rec2, body: { room_id: await roomId('prado', '14'), guest: 'Felipe', company: 'Pepsi', room_type: 'Sencilla', kind: 'noche', nights: 1, rate: 1, pay: 'Pendiente' } });
+  assert.equal(chk.status, 200);
+  const p14 = (await api('GET', '/api/hotels/prado/pending', { token: owner })).data.find((x) => x.room === '14');
+  assert.equal(p14.amount, 1400, 'se aplica la tarifa de empresa aunque recepción mande otro precio');
+  assert.equal((await api('GET', '/api/hotels/prado/pending', { token: rec2 })).data.some((x) => x.company), false);
+  const r14 = (await api('GET', '/api/hotels/prado/rooms', { token: rec2 })).data.find((x) => x.number === '14');
+  assert.equal(r14.rate, null);
+  assert.equal(r14.pending_balance, 0);
+  const caja = (await api('GET', `/api/hotels/prado/sales?from=${localDate(env)}&to=${localDate(env)}`, { token: rec2 })).data;
+  assert.equal(caja.some((x) => x.company === 'Pepsi' || x.company === 'Emsula'), false);
   // Impuestos: el total recibido ya incluye ISV 15% y Turismo 4%
   const today = localDate(env);
   await api('POST', `/api/sales/${pend.id}/payments`, { token: owner, body: { pay: 'Efectivo', nights: 2 } });
@@ -369,8 +392,11 @@ test('tarifas por tipo, empresa de crédito e impuestos incluidos', async () => 
   assert.equal(Math.round(fin.taxes.base + fin.taxes.isv + fin.taxes.tourism), Math.round(fin.total));
   assert.equal(fin.by_company.find((c) => c.k === 'Emsula').t, 4000);
   // El dueño puede cambiar las tarifas
-  await api('PATCH', '/api/hotels/prado', { token: owner, body: { rates: { Sencilla: 1450, Doble: 1700, Triple: 2000 } } });
-  assert.equal((await api('GET', '/api/me', { token: owner })).data.hotels.find((h) => h.id === 'prado').rates.Sencilla, 1450);
+  await api('PATCH', '/api/hotels/prado', { token: owner, body: { rates: { Sencilla: 1300, Doble: 1550, Triple: null }, company_rates: { Sencilla: 1450, Doble: 1700, Triple: 2000 } } });
+  const ph = (await api('GET', '/api/me', { token: owner })).data.hotels.find((h) => h.id === 'prado');
+  assert.equal(ph.company_rates.Sencilla, 1450);
+  assert.equal(ph.rates.Doble, 1550);
+  assert.equal(ph.rates.Triple, null);
 });
 
 test('desactivar un usuario cierra sus sesiones', async () => {

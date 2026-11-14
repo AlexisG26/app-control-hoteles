@@ -59,7 +59,14 @@ on('POST', '/api/auth/logout', async ({ env, user }) => {
 
 // ---------- Usuario y hoteles ----------
 on('GET', '/api/me', async ({ env, user }) => {
-  const hotels = hotelsOf(user, await allHotels(env)).map((h) => ({ ...h, ...hotelConfig(h), roles: rolesIn(user, h.id) }));
+  const hotels = hotelsOf(user, await allHotels(env)).map((h) => {
+    const roles = rolesIn(user, h.id);
+    const cfg = hotelConfig(h);
+    // Las tarifas de empresas de crédito solo las ve contabilidad
+    if (!roles.includes('contabilidad')) cfg.company_rates = Object.fromEntries(Object.keys(cfg.company_rates).map((k) => [k, null]));
+    const { company_rates: _raw, ...rest } = h;
+    return { ...rest, ...cfg, roles };
+  });
   return json({
     user: { id: user.id, email: user.email, name: user.name, is_owner: !!user.is_owner },
     hotels, pay: PAY, pay_now: PAY_NOW, today: localDate(env),
@@ -208,14 +215,20 @@ on('PATCH', '/api/hotels/:hotel', async ({ req, env, user, p }) => {
   let rates = h.rates;
   if (b.rates && typeof b.rates === 'object') {
     const clean = {};
-    for (const [k, v] of Object.entries(b.rates)) { const n = Number(v); const name = cleanStr(k, 30); if (name && Number.isFinite(n) && n >= 0) clean[name] = Math.round(n * 100) / 100; }
+    for (const [k, v] of Object.entries(b.rates)) { const name = cleanStr(k, 30); const n = v === null || v === '' ? null : Number(v); if (name && (n === null || (Number.isFinite(n) && n >= 0))) clean[name] = n === null ? null : Math.round(n * 100) / 100; }
     rates = JSON.stringify(clean);
+  }
+  let companyRates = h.company_rates;
+  if (b.company_rates && typeof b.company_rates === 'object') {
+    const clean = {};
+    for (const [k, v] of Object.entries(b.company_rates)) { const n = Number(v); const name = cleanStr(k, 30); if (name && Number.isFinite(n) && n >= 0) clean[name] = Math.round(n * 100) / 100; }
+    companyRates = JSON.stringify(clean);
   }
   let companies = h.companies;
   if (Array.isArray(b.companies)) companies = JSON.stringify(b.companies.map((c) => cleanStr(c, 80)).filter(Boolean).slice(0, 50));
   const pct = (v, d) => (Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 50 ? Number(v) : d);
-  await env.DB.prepare('UPDATE hotels SET checkout_time = ?, default_rate = ?, rates = ?, companies = ?, tax_isv = ?, tax_tourism = ? WHERE id = ?')
-    .bind(time, rate, rates, companies, pct(b.tax_isv, h.tax_isv), pct(b.tax_tourism, h.tax_tourism), h.id).run();
+  await env.DB.prepare('UPDATE hotels SET checkout_time = ?, default_rate = ?, rates = ?, company_rates = ?, companies = ?, tax_isv = ?, tax_tourism = ? WHERE id = ?')
+    .bind(time, rate, rates, companyRates, companies, pct(b.tax_isv, h.tax_isv), pct(b.tax_tourism, h.tax_tourism), h.id).run();
   await audit(env, user, 'hotel_editado', 'hotel', h.id, { checkout_time: time, default_rate: rate, rates, companies });
   return json({ ok: true });
 });
