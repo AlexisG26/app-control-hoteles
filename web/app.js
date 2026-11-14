@@ -911,6 +911,7 @@ async function viewContabilidad(h) {
       <strong>${parseD(wk).getUTCDate()} – ${hnShort(parseD(end))} ${parseD(end).getUTCFullYear()}</strong>
       <button class="btn ghost" id="wn" aria-label="Semana siguiente" ${isCur ? 'disabled' : ''}>›</button>
     </div>
+    <button class="btn ghost" id="past">+ Registrar reserva de días anteriores</button>
     <div class="tiles">
       <div class="tile"><span>Total semana</span><b>${fmt(fin.total)}</b></div>
       <div class="tile"><span>Promedio diario</span><b>${fmt(isCur ? fin.total / (days.filter((d) => d <= today).length || 1) : fin.avg_day)}</b></div>
@@ -960,6 +961,7 @@ async function viewContabilidad(h) {
   app.querySelectorAll('[data-po]').forEach((b) => { b.onclick = () => act(b, () => api('POST', `/api/sales/${b.dataset.po}/po`, { action: b.dataset.a }), b.dataset.a === 'cobrada' ? 'Orden cobrada' : 'Orden facturada'); });
   bindPending(h, pending);
   bindProofs();
+  $('past').onclick = () => pastStaySheet(h);
   bindVoid();
   $('csv').onclick = () => {
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
@@ -1166,6 +1168,61 @@ async function viewUsuarios() {
       if ($('tog')) $('tog').onclick = (e) => act(e.target, () => api('PATCH', `/api/users/${u.id}`, { active: !u.active }), u.active ? 'Usuario desactivado' : 'Usuario reactivado');
     });
   }
+}
+
+// Reserva de días anteriores (pasar al sistema lo que estaba en papel). Solo contabilidad y gerencia.
+async function pastStaySheet(h, last = {}) {
+  const rooms = await api('GET', `/api/hotels/${h.id}/rooms`);
+  const today = hnDate();
+  const types = roomTypes(h);
+  sheet(`<h3>Reserva de días anteriores</h3>
+    <p class="hint">Si la estadía ya terminó, queda en el historial y en las ventas de ese día. Si todavía sigue, la habitación queda ocupada hasta su salida.</p>
+    <div class="row">
+      <label>Fecha de entrada<input id="p-d" type="date" max="${today}" value="${last.date || addDays(today, -1)}"></label>
+      <label>Habitación<select id="p-r">${rooms.map((r) => `<option value="${r.id}" ${String(last.room_id) === String(r.id) ? 'selected' : ''}>${esc(r.number)}${r.status !== 'libre' ? ` (${statusLabel[r.status].toLowerCase()} ahora)` : ''}</option>`).join('')}</select></label>
+    </div>
+    <label>Nombre del huésped<input id="p-g" autocomplete="off"></label>
+    <label>Empresa (si es a crédito o por convenio)<input id="p-co" list="p-companies" autocomplete="off" placeholder="Opcional">
+      <datalist id="p-companies">${(h.companies || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
+    ${types.length ? `<div class="seg types" role="group" aria-label="Tipo de habitación">${types.map((t, i) => `<button type="button" data-ptype="${esc(t)}" aria-pressed="${i === 0}">${esc(t)}<small data-pprice="${esc(t)}"></small></button>`).join('')}</div>` : ''}
+    <div class="row"><label>Noches<input id="p-n" type="number" min="1" value="1" inputmode="numeric"></label>
+      <label>Precio por noche (L)<input id="p-p" type="number" min="0" step="any" inputmode="decimal"></label></div>
+    ${payFields(h)}
+    <div class="calc" id="calc"></div><div class="err" id="err"></div>
+    <div class="row"><button class="btn ghost" id="c">Cancelar</button><button class="btn" id="ok">Guardar</button></div>
+    <button class="btn ghost" id="okMore">Guardar y registrar otra</button>`, () => {
+    let roomType = types[0] || null;
+    const upd = () => {
+      const credit = isCredit(h, $('p-co').value);
+      $('sheetHost').querySelectorAll('[data-pprice]').forEach((el) => { const v = typeRate(h, el.dataset.pprice, credit); el.textContent = v !== null ? fmt(v) : ''; });
+      const d = $('p-d').value; const n = Math.max(1, Math.floor(+$('p-n').value || 1)); const out = d ? addDays(d, n) : '';
+      const total = n * (+$('p-p').value || 0);
+      const ends = out ? `${hnDay(parseD(out))}, ${h.checkout_time}` : '';
+      const still = out && out > today;
+      $('calc').innerHTML = d ? `${n} noche${n > 1 ? 's' : ''} · salida ${ends} · <b>${fmt(total)}</b><br>${still ? 'Todavía sigue: la habitación quedará ocupada.' : 'Ya terminó: queda como historial.'}` : '';
+    };
+    const setRate = () => { const v = roomType ? typeRate(h, roomType, isCredit(h, $('p-co').value)) : null; if (v !== null) $('p-p').value = v; upd(); };
+    $('sheetHost').querySelectorAll('[data-ptype]').forEach((t) => { t.onclick = () => { roomType = t.dataset.ptype; $('sheetHost').querySelectorAll('[data-ptype]').forEach((x) => x.setAttribute('aria-pressed', x === t)); setRate(); }; });
+    $('p-co').onchange = () => { if (isCredit(h, $('p-co').value) && $('f-pay').value === 'Efectivo') { $('f-pay').value = 'Pendiente'; $('f-pay').dispatchEvent(new Event('change')); } setRate(); };
+    ['p-d', 'p-n', 'p-p'].forEach((id) => { $(id).oninput = upd; });
+    bindPay(); setRate();
+    $('c').onclick = closeSheet;
+    const save = async (btn, more) => {
+      $('err').textContent = ''; btn.disabled = true;
+      const body = { date: $('p-d').value, room_id: +$('p-r').value, guest: $('p-g').value, company: $('p-co').value.trim() || undefined, room_type: roomType || undefined, nights: +$('p-n').value, rate: +$('p-p').value, ...payBody() };
+      try {
+        if (!body.date) throw new Error('Elige la fecha de entrada.');
+        if (!(body.rate > 0)) throw new Error('Escribe el precio por noche.');
+        const r = await api('POST', `/api/hotels/${h.id}/past-stay`, body);
+        LS.set('ch-week-' + h.id, monday(body.date));
+        toast(r.ongoing ? 'Reserva guardada · la habitación quedó ocupada' : 'Reserva guardada en el historial');
+        if (more) { await render(); pastStaySheet(h, { date: body.date, room_id: body.room_id }); }
+        else { closeSheet(); render(); }
+      } catch (e) { $('err').textContent = e.message; btn.disabled = false; }
+    };
+    $('ok').onclick = (e) => save(e.target, false);
+    $('okMore').onclick = (e) => save(e.target, true);
+  });
 }
 
 // Código de acceso de un solo uso para entrar sin correo (lo entrega gerencia por WhatsApp)

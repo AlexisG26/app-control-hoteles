@@ -442,6 +442,37 @@ test('eliminar usuario: cierra su acceso, libera el correo y conserva el histori
   assert.equal((await api('DELETE', `/api/users/${owners[0].id}`, { token: owner })).status, 400);
 });
 
+test('reservas de días anteriores: historial, ocupación si sigue y sin encimar', async () => {
+  const today = localDate(env);
+  const d10 = addDays(today, -10);
+  // Recepción no puede
+  const recX = (await api('POST', '/api/users', { token: owner, body: { email: 'recx@example.com', name: 'Rec X', memberships: [{ hotel_id: 'prokinto', role: 'recepcion' }] } })).data;
+  const tx = await login('recx@example.com');
+  const r5 = await roomId('prokinto', '505');
+  assert.equal((await api('POST', '/api/hotels/prokinto/past-stay', { token: tx, body: { room_id: r5, date: d10, guest: 'X', nights: 1, rate: 500, pay: 'Efectivo' } })).status, 403);
+  // Ya terminó: queda en historial y en la venta de ese día, la habitación no cambia
+  const before = (await api('GET', '/api/hotels/prokinto/rooms', { token: owner })).data.find((x) => x.number === '505').status;
+  const a = await api('POST', '/api/hotels/prokinto/past-stay', { token: owner, body: { room_id: r5, date: d10, guest: 'Cliente de Facebook', nights: 2, rate: 500, pay: 'Transferencia' } });
+  assert.equal(a.status, 200, JSON.stringify(a.data));
+  assert.equal(a.data.ongoing, false);
+  assert.equal((await api('GET', '/api/hotels/prokinto/rooms', { token: owner })).data.find((x) => x.number === '505').status, before);
+  const day = (await api('GET', `/api/hotels/prokinto/sales?from=${d10}&to=${d10}`, { token: owner })).data;
+  assert.equal(day.find((x) => x.concept.includes('Cliente de Facebook')).amount, 1000);
+  // Encimada: rechazada
+  const clash = await api('POST', '/api/hotels/prokinto/past-stay', { token: owner, body: { room_id: r5, date: addDays(d10, 1), guest: 'Otro', nights: 1, rate: 500, pay: 'Efectivo' } });
+  assert.equal(clash.status, 400);
+  assert.match(clash.data.error, /Cliente de Facebook/);
+  // Fecha futura: rechazada
+  assert.equal((await api('POST', '/api/hotels/prokinto/past-stay', { token: owner, body: { room_id: r5, date: addDays(today, 1), guest: 'X', nights: 1, rate: 500, pay: 'Efectivo' } })).status, 400);
+  // Sigue hoy: ocupa la habitación
+  const r10 = await roomId('prokinto', '510');
+  const b2 = await api('POST', '/api/hotels/prokinto/past-stay', { token: owner, body: { room_id: r10, date: addDays(today, -2), guest: 'Huésped largo', nights: 5, rate: 500, pay: 'Pendiente' } });
+  assert.equal(b2.data.ongoing, true);
+  const room10 = (await api('GET', '/api/hotels/prokinto/rooms', { token: owner })).data.find((x) => x.number === '510');
+  assert.equal(room10.status, 'ocupada');
+  assert.equal(room10.guest, 'Huésped largo');
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });

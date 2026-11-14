@@ -63,11 +63,11 @@ function payInfo(hotel, b) {
 }
 
 async function addSale(env, user, hotel, s) {
-  const now = Date.now();
+  const now = s.ts ?? Date.now();
   const r = await env.DB.prepare(
     `INSERT INTO sales (hotel_id, local_date, ts, concept, room, stay_id, kind, nights, hours, amount, pay, po, created_by, parent_id, proof_key, paid_nights, room_type, company)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-  ).bind(hotel.id, localDate(env, now), now, s.concept, s.room ?? null, s.stay_id ?? null, s.kind,
+  ).bind(hotel.id, s.local_date ?? localDate(env, now), now, s.concept, s.room ?? null, s.stay_id ?? null, s.kind,
     s.nights || 0, s.hours || 0, s.amount, s.pay, s.po ?? null, user.id, s.parent_id ?? null, s.proof_key ?? null, s.paid_nights || 0, s.room_type ?? null, s.company ?? null).run();
   return r.meta.last_row_id;
 }
@@ -202,6 +202,57 @@ export async function checkOut(env, user, stayId, mode = 'manual') {
     url: `#/hotel/${s.hotel_id}/limpieza`,
   });
   return { ok: true, room: room.number };
+}
+
+// ---------------- Reservas de días anteriores ----------------
+
+/**
+ * Registrar una estadía que empezó en una fecha pasada (para pasar al sistema reservas que se llevaban en papel).
+ * Si ya terminó, queda como historial; si sigue, ocupa la habitación hasta su salida.
+ * La venta se registra en la fecha de entrada. Solo gerencia y contabilidad.
+ */
+export async function pastStay(env, user, hotelId, b) {
+  requireRole(user, hotelId, 'contabilidad');
+  const hotel = await getHotel(env, hotelId);
+  const room = await getRoom(env, b.room_id);
+  if (room.hotel_id !== hotel.id) throw bad('La habitación no es de este hotel.');
+  const today = localDate(env);
+  const date = String(b.date || '');
+  if (!isDate(date)) throw bad('Elige la fecha de entrada.');
+  if (date > today) throw bad('La fecha de entrada no puede ser futura.');
+  if (daysBetween(date, today) > 366) throw bad('Solo se pueden registrar reservas del último año.');
+  const guest = cleanStr(b.guest, 120) || 'Huésped';
+  const company = cleanStr(b.company, 80) || null;
+  const roomType = cleanStr(b.room_type, 30) || null;
+  const nights = posInt(b.nights, 120);
+  const rate = money(b.rate ?? rateFor(hotel, roomType, company) ?? hotel.default_rate);
+  if (!rate) throw bad('Escribe el precio por noche.');
+  const p = payInfo(hotel, b);
+  const checkIn = localToUtc(env, date, '14:00');
+  const due = localToUtc(env, addDays(date, nights), hotel.checkout_time);
+  const now = Date.now();
+  // No encimar con otra estadía de la misma habitación
+  const clash = await env.DB.prepare(
+    `SELECT guest, check_in_at, COALESCE(checked_out_at, due_out_at) AS out_at FROM stays
+      WHERE room_id = ? AND check_in_at < ? AND COALESCE(checked_out_at, due_out_at) > ? LIMIT 1`,
+  ).bind(room.id, due, checkIn).first();
+  if (clash) throw bad(`La habitación ${room.number} ya tiene a ${clash.guest} en esas fechas.`);
+  const ongoing = due > now;
+  if (ongoing && room.status !== 'libre') throw bad(`La habitación ${room.number} está ${room.status.replace('_', ' ')} ahora. Si la estadía sigue, primero libérala.`);
+  const st = await env.DB.prepare(
+    `INSERT INTO stays (hotel_id, room_id, guest, kind, check_in_at, due_out_at, nights, hours, rate, created_by, room_type, company, checked_out_at, checkout_mode)
+     VALUES (?,?,?,'noche',?,?,?,0,?,?,?,?,?,?)`,
+  ).bind(hotel.id, room.id, guest, checkIn, due, nights, rate, user.id, roomType, company, ongoing ? null : due, ongoing ? null : 'historico').run();
+  const stayId = st.meta.last_row_id;
+  if (ongoing) {
+    await env.DB.prepare(`UPDATE rooms SET status='ocupada', current_stay_id=?, updated_at=?, updated_by=? WHERE id=? AND status='libre'`)
+      .bind(stayId, now, user.id, room.id).run();
+  }
+  const amount = Math.round(nights * rate * 100) / 100;
+  const concept = `Hab. ${room.number} · ${guest}${company ? ` · ${company}` : ''}`;
+  await addSale(env, user, hotel, { concept, room: room.number, stay_id: stayId, kind: 'hospedaje', nights, amount, room_type: roomType, company, local_date: date, ts: checkIn, ...p });
+  await audit(env, user, 'reserva_anterior', 'stay', stayId, { room: room.number, date, nights, amount });
+  return { ok: true, stay_id: stayId, ongoing, check_out: addDays(date, nights), amount };
 }
 
 // ---------------- Limpieza ----------------
