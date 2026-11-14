@@ -2,9 +2,10 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, readdirSync } from 'node:fs';
 
-export function createD1(migrationsDir) {
+// Las migraciones con datos reales (cargas de reportes) se omiten en pruebas y en el servidor local.
+export function createD1(migrationsDir, { skip = /reporte/ } = {}) {
   const db = new DatabaseSync(':memory:');
-  for (const f of readdirSync(migrationsDir).filter((x) => x.endsWith('.sql')).sort()) {
+  for (const f of readdirSync(migrationsDir).filter((x) => x.endsWith('.sql') && !(skip && skip.test(x))).sort()) {
     db.exec(readFileSync(new URL(f, migrationsDir), 'utf8'));
   }
   const norm = (v) => (v === undefined ? null : typeof v === 'boolean' ? (v ? 1 : 0) : v);

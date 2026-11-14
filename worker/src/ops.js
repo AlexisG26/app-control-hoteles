@@ -16,6 +16,11 @@ export async function getHotel(env, id) {
   if (!h) throw notFound('Hotel no encontrado.');
   return h;
 }
+/** Tarifas por tipo y empresas de crédito del hotel (guardadas como JSON). */
+export function hotelConfig(h) {
+  const parse = (v, d) => { try { return v ? JSON.parse(v) : d; } catch { return d; } };
+  return { rates: parse(h.rates, {}), companies: parse(h.companies, []) };
+}
 async function getRoom(env, roomId) {
   const r = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(Number(roomId)).first();
   if (!r) throw notFound('Habitación no encontrada.');
@@ -45,10 +50,10 @@ function payInfo(hotel, b) {
 async function addSale(env, user, hotel, s) {
   const now = Date.now();
   const r = await env.DB.prepare(
-    `INSERT INTO sales (hotel_id, local_date, ts, concept, room, stay_id, kind, nights, hours, amount, pay, po, created_by, parent_id, proof_key, paid_nights)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO sales (hotel_id, local_date, ts, concept, room, stay_id, kind, nights, hours, amount, pay, po, created_by, parent_id, proof_key, paid_nights, room_type, company)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).bind(hotel.id, localDate(env, now), now, s.concept, s.room ?? null, s.stay_id ?? null, s.kind,
-    s.nights || 0, s.hours || 0, s.amount, s.pay, s.po ?? null, user.id, s.parent_id ?? null, s.proof_key ?? null, s.paid_nights || 0).run();
+    s.nights || 0, s.hours || 0, s.amount, s.pay, s.po ?? null, user.id, s.parent_id ?? null, s.proof_key ?? null, s.paid_nights || 0, s.room_type ?? null, s.company ?? null).run();
   return r.meta.last_row_id;
 }
 
@@ -59,7 +64,7 @@ export async function listRooms(env, user, hotelId) {
   const showGuest = can(user, hotelId, 'recepcion', 'contabilidad');
   const { results } = await env.DB.prepare(
     `SELECT r.id, r.number, r.status, r.updated_at,
-            s.id AS stay_id, s.guest, s.kind, s.check_in_at, s.due_out_at, s.nights, s.hours, s.rate,
+            s.id AS stay_id, s.guest, s.kind, s.check_in_at, s.due_out_at, s.nights, s.hours, s.rate, s.room_type, s.company,
             (SELECT COUNT(*) FROM issues i WHERE i.room_id = r.id AND i.status = 'abierta') AS open_issues,
             (SELECT c.started_at FROM cleanings c WHERE c.room_id = r.id AND c.finished_at IS NULL ORDER BY c.id DESC LIMIT 1) AS cleaning_started_at,
             (SELECT u.name FROM cleanings c JOIN users u ON u.id = c.started_by WHERE c.room_id = r.id AND c.finished_at IS NULL ORDER BY c.id DESC LIMIT 1) AS cleaning_by,
@@ -68,7 +73,7 @@ export async function listRooms(env, user, hotelId) {
       WHERE r.hotel_id = ? ORDER BY r.sort, r.number`,
   ).bind(hotelId).all();
   return results.map((r) => {
-    if (!showGuest) { r.guest = r.guest ? 'Ocupada' : null; r.rate = null; r.pending_balance = 0; }
+    if (!showGuest) { r.guest = r.guest ? 'Ocupada' : null; r.rate = null; r.pending_balance = 0; r.company = null; }
     return r;
   });
 }
@@ -84,6 +89,9 @@ export async function checkIn(env, user, hotelId, b) {
   const guest = cleanStr(b.guest, 120) || 'Huésped';
   const kind = b.kind === 'hora' ? 'hora' : 'noche';
   const p = payInfo(hotel, b);
+  const { rates } = hotelConfig(hotel);
+  const roomType = b.room_type && rates[b.room_type] !== undefined ? b.room_type : (cleanStr(b.room_type, 30) || null);
+  const company = cleanStr(b.company, 80) || null;
   const now = Date.now();
   let due, nights = 0, hours = 0, amount, rate = null, concept;
 
@@ -96,16 +104,17 @@ export async function checkIn(env, user, hotelId, b) {
     concept = `Hab. ${room.number} · ${guest} (por hora, ${hours} h)`;
   } else {
     nights = posInt(b.nights, 120);
-    rate = money(b.rate ?? hotel.default_rate);
+    // Precio: el escrito; si no, la tarifa del tipo de habitación; si no, la tarifa general del hotel.
+    rate = money(b.rate ?? (roomType && rates[roomType] !== undefined ? rates[roomType] : hotel.default_rate));
     amount = Math.round(nights * rate * 100) / 100;
     due = localToUtc(env, addDays(localDate(env, now), nights), hotel.checkout_time);
-    concept = `Hab. ${room.number} · ${guest}`;
+    concept = `Hab. ${room.number} · ${guest}${company ? ` · ${company}` : ''}`;
   }
 
   const st = await env.DB.prepare(
-    `INSERT INTO stays (hotel_id, room_id, guest, kind, check_in_at, due_out_at, nights, hours, rate, created_by)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-  ).bind(hotel.id, room.id, guest, kind, now, due, nights, hours, rate, user.id).run();
+    `INSERT INTO stays (hotel_id, room_id, guest, kind, check_in_at, due_out_at, nights, hours, rate, created_by, room_type, company)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).bind(hotel.id, room.id, guest, kind, now, due, nights, hours, rate, user.id, roomType, company).run();
   const stayId = st.meta.last_row_id;
   // Ocupar la habitación solo si sigue libre (evita dos entradas simultáneas).
   const upd = await env.DB.prepare(`UPDATE rooms SET status='ocupada', current_stay_id=?, updated_at=?, updated_by=? WHERE id=? AND status='libre'`)
@@ -114,7 +123,7 @@ export async function checkIn(env, user, hotelId, b) {
     await env.DB.prepare('DELETE FROM stays WHERE id = ?').bind(stayId).run();
     throw bad(`La habitación ${room.number} acaba de ser ocupada por otra persona.`);
   }
-  await addSale(env, user, hotel, { concept, room: room.number, stay_id: stayId, kind: kind === 'hora' ? 'hora' : 'hospedaje', nights, hours, amount, ...p });
+  await addSale(env, user, hotel, { concept, room: room.number, stay_id: stayId, kind: kind === 'hora' ? 'hora' : 'hospedaje', nights, hours, amount, room_type: roomType, company, ...p });
   await audit(env, user, 'entrada', 'stay', stayId, { room: room.number, kind, nights, hours, amount });
   return { ok: true, stay_id: stayId, due_out_at: due };
 }
@@ -141,15 +150,15 @@ export async function extendStay(env, user, stayId, b) {
     concept = `Hab. ${room.number} · ${s.guest} (por hora, +${hours} h)`;
   } else {
     nights = posInt(b.nights, 120);
-    const rate = money(b.rate ?? s.rate ?? hotel.default_rate);
+    const rate = money(b.rate ?? s.rate ?? (s.room_type && hotelConfig(hotel).rates[s.room_type]) ?? hotel.default_rate);
     amount = Math.round(nights * rate * 100) / 100;
     const base = Math.max(s.due_out_at, localToUtc(env, localDate(env), hotel.checkout_time));
     due = localToUtc(env, addDays(localDate(env, base), nights), hotel.checkout_time);
-    concept = `Hab. ${room.number} · ${s.guest} (extensión)`;
+    concept = `Hab. ${room.number} · ${s.guest}${s.company ? ` · ${s.company}` : ''} (extensión)`;
   }
   await env.DB.prepare('UPDATE stays SET due_out_at = ?, nights = nights + ?, hours = hours + ?, notified_due = 0 WHERE id = ?')
     .bind(due, nights, hours, s.id).run();
-  await addSale(env, user, hotel, { concept, room: room.number, stay_id: s.id, kind: s.kind === 'hora' ? 'hora' : 'hospedaje', nights, hours, amount, ...p });
+  await addSale(env, user, hotel, { concept, room: room.number, stay_id: s.id, kind: s.kind === 'hora' ? 'hora' : 'hospedaje', nights, hours, amount, room_type: s.room_type, company: s.company, ...p });
   await audit(env, user, 'extension', 'stay', s.id, { nights, hours, amount });
   return { ok: true, due_out_at: due };
 }
@@ -512,6 +521,21 @@ export async function financeReport(env, user, hotelId, from, to) {
   ).bind(hotelId).first();
   const days = daysBetween(from, to) + 1;
   const rooms = await env.DB.prepare('SELECT COUNT(*) AS n FROM rooms WHERE hotel_id = ?').bind(hotelId).first();
+  const h = await getHotel(env, hotelId);
+  // Impuestos incluidos en el precio: base = total / (1 + ISV + Turismo)
+  const rate = (h.tax_isv + h.tax_tourism) / 100;
+  const baseAmt = rate ? tot[0].t / (1 + rate) : tot[0].t;
+  const taxes = rate ? {
+    isv_pct: h.tax_isv, tourism_pct: h.tax_tourism,
+    base: Math.round(baseAmt * 100) / 100,
+    isv: Math.round(baseAmt * (h.tax_isv / 100) * 100) / 100,
+    tourism: Math.round(baseAmt * (h.tax_tourism / 100) * 100) / 100,
+  } : null;
+  const byCompany = (await env.DB.prepare(
+    `SELECT s.company AS k, COUNT(*) AS n, COALESCE(SUM(s.amount),0) AS t, COALESCE(SUM(s.nights),0) AS nights
+       FROM sales s WHERE s.hotel_id = ? AND s.voided_at IS NULL AND s.kind <> 'abono' AND s.company IS NOT NULL AND s.local_date BETWEEN ? AND ?
+      GROUP BY s.company ORDER BY t DESC`,
+  ).bind(hotelId, from, to).all()).results;
   return {
     hotel_id: hotelId, from, to, total: tot[0].t, count: tot[0].n, nights: tot[0].nights,
     avg_day: tot[0].t / days,
@@ -519,6 +543,7 @@ export async function financeReport(env, user, hotelId, from, to) {
     by_day: byDay, by_pay: byPay, by_kind: byKind, by_user: byUser,
     avg_night_sold: lodgingSold[0].nights ? lodgingSold[0].t / lodgingSold[0].nights : 0,
     pending_created: pendingNew[0], pending_balance: pendingNow.t, pending_count: pendingNow.n,
+    taxes, by_company: byCompany,
   };
 }
 
@@ -544,7 +569,7 @@ export async function compareFinance(env, user, hotels, from, to) {
       prev_total: prev.t,
       delta_pct: prev.t ? Math.round(((cur.total - prev.t) / prev.t) * 100) : null,
       avg_night: cur.avg_night_sold,
-      pending_balance: cur.pending_balance, pending_count: cur.pending_count,
+      pending_balance: cur.pending_balance, pending_count: cur.pending_count, taxes: cur.taxes, by_company: cur.by_company,
       avg_day: cur.avg_day,
       occupancy_pct: cur.occupancy_nights_pct,
       by_pay: cur.by_pay, by_kind: cur.by_kind, by_day: cur.by_day, by_user: cur.by_user,

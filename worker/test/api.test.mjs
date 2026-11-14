@@ -347,6 +347,32 @@ test('pago pendiente: se cobra por noches con comprobante y no cuenta como ingre
   assert.equal((await api('POST', '/api/hotels/prokinto/sales', { token: owner, body: { concept: 'x', amount: 10, pay: 'Orden de compra', po: '1' } })).status, 400);
 });
 
+test('tarifas por tipo, empresa de crédito e impuestos incluidos', async () => {
+  const me = await api('GET', '/api/me', { token: owner });
+  const prado = me.data.hotels.find((h) => h.id === 'prado');
+  assert.deepEqual(prado.rates, { Sencilla: 1400, Doble: 1700, Triple: 2000 });
+  assert.ok(prado.companies.includes('Emsula'));
+  // Sin precio escrito: toma la tarifa del tipo
+  const r = await api('POST', '/api/hotels/prado/checkin', { token: owner, body: { room_id: await roomId('prado', '12'), guest: 'Nelson Alemán', company: 'Emsula', room_type: 'Triple', kind: 'noche', nights: 2, pay: 'Pendiente' } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const pend = (await api('GET', '/api/hotels/prado/pending', { token: owner })).data.find((x) => x.room === '12');
+  assert.equal(pend.amount, 4000);
+  assert.equal(pend.company, 'Emsula');
+  assert.match(pend.concept, /Emsula/);
+  const rooms = (await api('GET', '/api/hotels/prado/rooms', { token: owner })).data;
+  assert.equal(rooms.find((x) => x.number === '12').room_type, 'Triple');
+  // Impuestos: el total recibido ya incluye ISV 15% y Turismo 4%
+  const today = localDate(env);
+  await api('POST', `/api/sales/${pend.id}/payments`, { token: owner, body: { pay: 'Efectivo', nights: 2 } });
+  const fin = (await api('GET', `/api/hotels/prado/finance?from=${today}&to=${today}`, { token: owner })).data;
+  assert.equal(fin.taxes.isv_pct, 15);
+  assert.equal(Math.round(fin.taxes.base + fin.taxes.isv + fin.taxes.tourism), Math.round(fin.total));
+  assert.equal(fin.by_company.find((c) => c.k === 'Emsula').t, 4000);
+  // El dueño puede cambiar las tarifas
+  await api('PATCH', '/api/hotels/prado', { token: owner, body: { rates: { Sencilla: 1450, Doble: 1700, Triple: 2000 } } });
+  assert.equal((await api('GET', '/api/me', { token: owner })).data.hotels.find((h) => h.id === 'prado').rates.Sencilla, 1450);
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });

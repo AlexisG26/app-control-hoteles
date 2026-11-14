@@ -7,6 +7,7 @@ const app = $('app');
 // ---------------- Utilidades ----------------
 const esc = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (n) => 'L ' + (Math.round((+n || 0) * 100) / 100).toLocaleString('es-HN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+const fmt2 = (n) => 'L ' + (+n || 0).toLocaleString('es-HN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtShort = (n) => Math.round(+n || 0).toLocaleString('es-HN');
 const hnDate = (ms = Date.now()) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(ms);
 const hnTime = (ms = Date.now()) => new Intl.DateTimeFormat('es-HN', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: true }).format(ms);
@@ -424,7 +425,7 @@ async function viewFinanzas() {
   const showTrend = keys.length > 1;
   const label = (k, i) => (daily ? (keys.length > 10 && i % Math.ceil(keys.length / 8) !== 0 ? '' : String(parseD(k).getUTCDate())) : MONTHS[Number(k.slice(5)) - 1]);
   const payColors = { Efectivo: 'var(--free)', Tarjeta: 'var(--cleaning)', Transferencia: 'var(--brass)', 'Orden de compra': 'var(--block)' };
-  const kindLabel = { hospedaje: 'Por noche', hora: 'Por hora', extra: 'Extras' };
+  const kindLabel = { hospedaje: 'Por noche', hora: 'Por hora', extra: 'Extras', abono: 'Pagos de pendientes' };
 
   app.innerHTML = header({ global: true, view: '#/finanzas', title: 'Gerencia' }) + `
     <div class="seg period" role="group" aria-label="Período">${PERIODS.map(([k, l]) => `<button aria-pressed="${pk === k}" data-period="${k}">${l}</button>`).join('')}</div>
@@ -462,6 +463,8 @@ async function viewFinanzas() {
           <div class="stackbar">${h.by_pay.map((p) => `<span style="width:${(p.t / payTotal) * 100}%;background:${payColors[p.k] || 'var(--muted)'}"></span>`).join('')}</div>
           <div class="legend">${h.by_pay.sort((a, b) => b.t - a.t).map((p) => `<span style="--c:${payColors[p.k] || 'var(--muted)'}">${esc(p.k)} ${fmt(p.t)}</span>`).join('')}</div>
         </div>` : '<p class="empty">Sin ingresos en este período.</p>'}
+        ${h.taxes ? `<p class="hint">Incluye ISV ${fmt(h.taxes.isv)} y Turismo ${fmt(h.taxes.tourism)} · venta sin impuestos ${fmt(h.taxes.base)}</p>` : ''}
+        ${h.by_company?.length ? `<div class="legend plain">${h.by_company.map((c) => `<span>${esc(c.k)}: <b>${fmt(c.t)}</b></span>`).join('')}</div>` : ''}
         ${h.by_kind.length ? `<div class="legend plain">${h.by_kind.map((k) => `<span>${kindLabel[k.k] || k.k}: <b>${fmt(k.t)}</b></span>`).join('')}</div>` : ''}
         ${h.by_user.length ? `<details><summary>Por quién registró</summary><ul class="list">${h.by_user.map((u) => `<li><div class="d">${esc(u.k)}<small>${u.n} cobro${u.n > 1 ? 's' : ''}</small></div><span class="m">${fmt(u.t)}</span><span></span></li>`).join('')}</ul></details>` : ''}
         <a class="btn ghost" href="#/hotel/${h.id}/contabilidad">Ver movimientos de ${esc(h.name.replace('Hostal ', ''))}</a>
@@ -637,9 +640,15 @@ function roomSheet(h, r) {
     const hourOK = !!h.allow_hourly;
     sheet(`<h3>Entrada · Hab. ${esc(r.number)}</h3>
       <label>Nombre del huésped<input id="f-g" autocomplete="off"></label>
+      <label>Empresa (si es a crédito o por convenio)<input id="f-co" list="companies" autocomplete="off" placeholder="Opcional">
+        <datalist id="companies">${(h.companies || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
       ${hourOK ? `<div class="seg" role="group" aria-label="Tipo"><button type="button" id="ty-n" aria-pressed="true">Por noche</button><button type="button" id="ty-h" aria-pressed="false">Por hora</button></div>` : ''}
-      <div class="row" id="g-n"><label>Noches<input id="f-n" type="number" min="1" value="1" inputmode="numeric"></label>
-        <label>Precio por noche (L)<input id="f-p" type="number" min="0" step="any" inputmode="decimal" value="${LS.get('ch-rate-' + h.id, h.default_rate)}"></label></div>
+      <div id="g-n" class="stack">
+        ${Object.keys(h.rates || {}).length ? `<div class="seg types" role="group" aria-label="Tipo de habitación">${Object.entries(h.rates).map(([t, v], i) => `<button type="button" data-type="${esc(t)}" data-rate="${v}" aria-pressed="${i === 0}">${esc(t)}<small>${fmt(v)}</small></button>`).join('')}</div>` : ''}
+        <div class="row"><label>Noches<input id="f-n" type="number" min="1" value="1" inputmode="numeric"></label>
+        <label>Precio por noche (L)<input id="f-p" type="number" min="0" step="any" inputmode="decimal" value="${Object.values(h.rates || {})[0] ?? LS.get('ch-rate-' + h.id, h.default_rate)}"></label></div>
+        ${h.tax_isv || h.tax_tourism ? `<p class="hint">Precio con ISV ${h.tax_isv}% y Turismo ${h.tax_tourism}% incluidos.</p>` : ''}
+      </div>
       <div class="row" id="g-h" hidden><label>Horas<input id="f-h" type="number" min="1" value="${LS.get('ch-hours', 3)}" inputmode="numeric"></label>
         <label>Monto a cobrar (L)<input id="f-hm" type="number" min="0" step="any" inputmode="decimal" value="${LS.get('ch-hamt', '')}"></label></div>
       ${payFields(h)}
@@ -647,6 +656,16 @@ function roomSheet(h, r) {
       <div class="row"><button class="btn ghost" id="c">Cancelar</button><button class="btn" id="ok">Registrar entrada</button></div>
       ${issueBtn}`, () => {
       let hourly = false;
+      let roomType = Object.keys(h.rates || {})[0] || null;
+      $('sheetHost').querySelectorAll('[data-type]').forEach((t) => {
+        t.onclick = () => {
+          roomType = t.dataset.type; $('f-p').value = t.dataset.rate;
+          $('sheetHost').querySelectorAll('[data-type]').forEach((x) => x.setAttribute('aria-pressed', x === t));
+          upd();
+        };
+      });
+      // Si es empresa de crédito, sugerir pago pendiente
+      $('f-co').onchange = () => { if ((h.companies || []).includes($('f-co').value.trim()) && $('f-pay').value === 'Efectivo') { $('f-pay').value = 'Pendiente'; $('f-pay').dispatchEvent(new Event('change')); } };
       const upd = () => {
         if (hourly) {
           const hrs = Math.max(1, +$('f-h').value || 1);
@@ -663,9 +682,9 @@ function roomSheet(h, r) {
       $('c').onclick = closeSheet;
       $('issue').onclick = () => issueSheet(h, r);
       $('ok').onclick = (e) => act(e.target, async () => {
-        const b = { room_id: r.id, guest: $('f-g').value, ...payBody() };
+        const b = { room_id: r.id, guest: $('f-g').value, company: $('f-co').value.trim() || undefined, ...payBody() };
         if (hourly) { Object.assign(b, { kind: 'hora', hours: +$('f-h').value, amount: +$('f-hm').value }); LS.set('ch-hours', +$('f-h').value); LS.set('ch-hamt', +$('f-hm').value); }
-        else { Object.assign(b, { kind: 'noche', nights: +$('f-n').value, rate: +$('f-p').value }); LS.set('ch-rate-' + h.id, +$('f-p').value); }
+        else { Object.assign(b, { kind: 'noche', nights: +$('f-n').value, rate: +$('f-p').value, room_type: roomType || undefined }); LS.set('ch-rate-' + h.id, +$('f-p').value); }
         await api('POST', `/api/hotels/${h.id}/checkin`, b);
       }, `Entrada registrada en la ${r.number}`);
     });
@@ -854,6 +873,13 @@ async function viewContabilidad(h) {
       ${h.allow_hourly ? `<div class="tile"><span>Por hora</span><b>${kind('hora').n}</b></div>` : ''}
       <div class="tile"><span>Extras</span><b>${fmt(kind('extra').t)}</b></div>
     </div>
+    ${fin.taxes ? `<section class="panel">
+      <div class="sec-head"><h2>Impuestos incluidos</h2><span class="hint">Sobre ${fmt(fin.total)} recibidos</span></div>
+      <div class="kpis"><div><span>Venta sin impuestos</span><b>${fmt2(fin.taxes.base)}</b></div>
+        <div><span>ISV ${fin.taxes.isv_pct}%</span><b>${fmt2(fin.taxes.isv)}</b></div>
+        <div><span>Turismo ${fin.taxes.tourism_pct}%</span><b>${fmt2(fin.taxes.tourism)}</b></div></div>
+    </section>` : ''}
+    ${fin.by_company.length ? `<section class="panel"><h2>Por empresa</h2><ul class="list">${fin.by_company.map((c) => `<li><div class="d">${esc(c.k)}<small>${c.nights} noche${c.nights === 1 ? '' : 's'} · ${c.n} registro${c.n > 1 ? 's' : ''}</small></div><span class="m">${fmt(c.t)}</span><span></span></li>`).join('')}</ul></section>` : ''}
     ${pendingPanel(pending)}
     ${h.allow_po ? `<section class="panel">
       <div class="sec-head"><h2>Órdenes de compra pendientes</h2><span class="hint">${pos.length} · ${fmt(pos.reduce((a, p) => a + p.amount, 0))}</span></div>
@@ -980,7 +1006,14 @@ async function viewAjustes() {
     ${me.user.is_owner ? `
     <section class="panel">
       <h2>Hoteles</h2>
-      ${me.hotels.map((h) => `<div class="row" style="align-items:flex-end"><label>${esc(h.name)} · hora de salida<input type="time" id="co-${h.id}" value="${esc(h.checkout_time)}"></label><label>Precio por noche (L)<input type="number" id="rt-${h.id}" value="${h.default_rate}" inputmode="decimal"></label><button class="btn ghost" data-savehotel="${h.id}" style="flex:0 0 auto">Guardar</button></div>`).join('')}
+      ${me.hotels.map((h) => `<fieldset class="panel" style="gap:10px"><legend class="eyebrow">${esc(h.name)}</legend>
+        <div class="row"><label>Hora de salida<input type="time" id="co-${h.id}" value="${esc(h.checkout_time)}"></label>
+          <label>Precio general por noche (L)<input type="number" id="rt-${h.id}" value="${h.default_rate}" inputmode="decimal"></label></div>
+        <label>Tarifas por tipo (una por línea: Tipo = precio)<textarea id="rates-${h.id}" rows="3" placeholder="Sencilla = 1400">${esc(Object.entries(h.rates || {}).map(([k, v]) => `${k} = ${v}`).join('\n'))}</textarea></label>
+        <label>Empresas con crédito (separadas por coma)<input id="comp-${h.id}" value="${esc((h.companies || []).join(', '))}"></label>
+        <div class="row"><label>ISV incluido (%)<input type="number" id="isv-${h.id}" value="${h.tax_isv}" inputmode="decimal"></label>
+          <label>Turismo incluido (%)<input type="number" id="tur-${h.id}" value="${h.tax_tourism}" inputmode="decimal"></label></div>
+        <button class="btn ghost" data-savehotel="${h.id}">Guardar ${esc(h.name.replace('Hostal ', ''))}</button></fieldset>`).join('')}
     </section>
     <section class="panel">
       <h2>Conexión con Claude (MCP)</h2>
@@ -1000,7 +1033,13 @@ async function viewAjustes() {
   app.querySelectorAll('[data-savehotel]').forEach((b) => {
     b.onclick = async () => {
       const id = b.dataset.savehotel;
-      try { await api('PATCH', `/api/hotels/${id}`, { checkout_time: $('co-' + id).value, default_rate: +$('rt-' + id).value }); me = null; toast('Hotel actualizado'); render(); }
+      const rates = {};
+      $('rates-' + id).value.split('\n').forEach((l) => { const m = l.match(/^\s*(.+?)\s*[=:]\s*([\d.,]+)\s*$/); if (m) rates[m[1]] = Number(m[2].replace(/,/g, '')); });
+      const companies = $('comp-' + id).value.split(',').map((x) => x.trim()).filter(Boolean);
+      try {
+        await api('PATCH', `/api/hotels/${id}`, { checkout_time: $('co-' + id).value, default_rate: +$('rt-' + id).value, rates, companies, tax_isv: +$('isv-' + id).value, tax_tourism: +$('tur-' + id).value });
+        me = null; toast('Hotel actualizado'); render();
+      }
       catch (e) { toast(e.message); }
     };
   });

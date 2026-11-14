@@ -300,3 +300,8 @@ details summary { cursor: pointer; font-weight: 700; color: var(--accent); paddi
 .list > li:has(> .acts) { grid-template-columns: 1fr auto; row-gap: 6px; }
 .list > li > .acts { grid-column: 1 / -1; justify-content: flex-start; }
 .list > li > .acts:empty { display: none; }
+
+.seg.types button { display: flex; flex-direction: column; align-items: center; gap: 0; padding: 7px 6px; line-height: 1.2; }
+.seg.types small { font-weight: 400; font-size: 12px; opacity: .8; }
+fieldset.panel { margin: 0; }
+.sheet > * { flex-shrink: 0; }
