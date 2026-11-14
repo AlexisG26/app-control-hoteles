@@ -1070,6 +1070,7 @@ async function viewAjustes() {
     </section>` : ''}
     <section class="panel">
       ${installBanner() || '<p class="hint">La app ya está instalada en este dispositivo.</p>'}
+      <div class="row" style="align-items:center"><p class="hint" style="flex:1 1 auto">Versión ${esc(self.APP_CONFIG?.VERSION || 'local')}</p><button class="btn ghost" id="upd" style="flex:0 0 auto">Buscar actualización</button></div>
       <button class="btn warn" id="logout">Cerrar sesión</button>
     </section>`;
   bindInstall();
@@ -1107,6 +1108,7 @@ async function viewAjustes() {
   };
   app.querySelectorAll('[data-deltok]').forEach((b) => { b.onclick = async () => { await api('DELETE', `/api/tokens/${b.dataset.deltok}`); render(); }; });
   $('logout').onclick = () => logout(true);
+  $('upd').onclick = () => { toast('Buscando actualización…'); checkForUpdate(); };
 }
 
 // ================= USUARIOS (dueño) =================
@@ -1139,10 +1141,18 @@ async function viewUsuarios() {
       <div class="err" id="err"></div>
       <div class="row"><button class="btn ghost" id="c">Cancelar</button><button class="btn" id="ok">${u ? 'Guardar' : 'Crear usuario'}</button></div>
       ${u && u.active ? '<button class="btn ghost" id="acc">Generar código de acceso</button>' : ''}
-      ${u && !u.is_owner ? `<button class="btn ${u.active ? 'warn' : 'ghost'}" id="tog">${u.active ? 'Desactivar usuario' : 'Reactivar usuario'}</button>` : ''}`, () => {
+      ${u && !u.is_owner ? `<button class="btn ${u.active ? 'warn' : 'ghost'}" id="tog">${u.active ? 'Desactivar usuario' : 'Reactivar usuario'}</button>
+        <button class="btn danger-ghost" id="del">Eliminar usuario</button>
+        <p class="hint">Desactivar le quita el acceso, pero lo puedes reactivar. Eliminar lo quita del equipo para siempre; su nombre se conserva en el historial de cobros.</p>` : ''}
+      ${u?.is_owner ? '<p class="hint">Es de gerencia. Para quitarle el acceso, primero hay que sacar su correo de OWNER_EMAIL en GitHub.</p>' : ''}`, () => {
       $('c').onclick = closeSheet;
       const ms = () => [...document.querySelectorAll('[data-h]:checked')].map((x) => ({ hotel_id: x.dataset.h, role: x.dataset.r }));
       if ($('acc')) $('acc').onclick = () => accessCodeSheet(u);
+      if ($('del')) $('del').onclick = (e) => {
+        const b = e.target;
+        if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = `Toca otra vez para eliminar a ${u.name}`; setTimeout(() => { b.classList.remove('armed'); b.textContent = 'Eliminar usuario'; }, 4000); return; }
+        act(b, () => api('DELETE', `/api/users/${u.id}`), `${u.name} eliminado`);
+      };
       $('ok').onclick = async (e) => {
         if (u) return act(e.target, () => api('PATCH', `/api/users/${u.id}`, { name: $('u-n').value, telegram_chat_id: $('u-t').value, ...(u.is_owner ? {} : { memberships: ms() }) }), 'Usuario actualizado');
         // Usuario nuevo: crearlo y mostrar su código de acceso de una vez
@@ -1177,5 +1187,24 @@ async function accessCodeSheet(u, isNew = false) {
 }
 
 // ---------------- Arranque ----------------
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+// Actualizaciones: al publicar una versión nueva, el teléfono la toma solo y recarga una vez.
+if ('serviceWorker' in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloaded || document.querySelector('.scrim')) return; // no interrumpir un formulario abierto
+    reloaded = true; location.reload();
+  });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+  }).catch(() => {});
+}
+async function checkForUpdate() {
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    await reg?.update();
+    if (self.caches) for (const k of await caches.keys()) await caches.delete(k);
+  } catch { /* */ }
+  location.reload();
+}
 render();

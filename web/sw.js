@@ -17,7 +17,8 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
   e.respondWith(
-    fetch(e.request).then((res) => {
+    // no-cache: siempre pregunta a GitHub Pages si hay versión nueva (si no cambió, responde rápido sin descargar).
+    fetch(e.request, { cache: 'no-cache' }).then((res) => {
       if (res.ok) { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(e.request, copy)); }
       return res;
     }).catch(() => caches.match(e.request).then((r) => r || caches.match('index.html'))),

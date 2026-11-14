@@ -128,7 +128,7 @@ async function storeCode(env, email, code, ttlMs) {
  */
 export const ACCESS_CODE_HOURS = 24;
 export async function createAccessCode(env, userId) {
-  const u = await env.DB.prepare('SELECT email, active FROM users WHERE id = ?').bind(Number(userId)).first();
+  const u = await env.DB.prepare('SELECT email, active FROM users WHERE id = ? AND deleted_at IS NULL').bind(Number(userId)).first();
   if (!u) throw new HttpError(404, 'Usuario no encontrado.');
   if (!u.active) throw bad('El usuario está desactivado. Reactívalo primero.');
   const code = randomCode();

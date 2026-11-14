@@ -161,7 +161,7 @@ on('POST', '/api/notifications/test', async ({ env, user }) => {
 // ---------- Usuarios (solo el dueño) ----------
 on('GET', '/api/users', async ({ env, user }) => {
   requireOwner(user);
-  const { results: users } = await env.DB.prepare('SELECT id, email, name, is_owner, active, telegram_chat_id, created_at FROM users ORDER BY active DESC, name').all();
+  const { results: users } = await env.DB.prepare('SELECT id, email, name, is_owner, active, telegram_chat_id, created_at FROM users WHERE deleted_at IS NULL ORDER BY active DESC, name').all();
   const { results: ms } = await env.DB.prepare('SELECT * FROM memberships').all();
   return json(users.map((u) => ({ ...u, memberships: ms.filter((m) => m.user_id === u.id) })));
 });
@@ -204,6 +204,24 @@ async function setMemberships(env, userId, list) {
     await env.DB.prepare('INSERT OR IGNORE INTO memberships (user_id, hotel_id, role) VALUES (?,?,?)').bind(userId, m.hotel_id, m.role).run();
   }
 }
+
+on('DELETE', '/api/users/:id', async ({ env, user, p }) => {
+  requireOwner(user);
+  const id = Number(p.id);
+  const target = await env.DB.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').bind(id).first();
+  if (!target) throw notFound('Usuario no encontrado.');
+  if (target.id === user.id) throw bad('No puedes eliminar tu propio usuario.');
+  if (target.is_owner) throw bad('Este usuario es de gerencia. Para quitarlo, sácalo de OWNER_EMAIL en GitHub y luego elimínalo aquí.');
+  // Se conserva el nombre para el historial; se libera el correo y se cierran todos sus accesos.
+  const now = Date.now();
+  await env.DB.prepare('UPDATE users SET deleted_at = ?, active = 0, email = ? WHERE id = ?').bind(now, `eliminado-${id}-${now}@borrado.local`, id).run();
+  for (const sql of ['DELETE FROM memberships WHERE user_id = ?', 'DELETE FROM sessions WHERE user_id = ?', 'DELETE FROM passkeys WHERE user_id = ?', 'DELETE FROM push_subs WHERE user_id = ?', 'DELETE FROM api_tokens WHERE user_id = ?']) {
+    await env.DB.prepare(sql).bind(id).run();
+  }
+  await env.DB.prepare('DELETE FROM email_codes WHERE email = ?').bind(target.email).run();
+  await audit(env, user, 'usuario_eliminado', 'user', id, { email: target.email, name: target.name });
+  return json({ ok: true });
+});
 
 on('POST', '/api/users/:id/access-code', async ({ env, user, p }) => {
   requireOwner(user);

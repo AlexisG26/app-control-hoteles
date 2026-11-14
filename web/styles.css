@@ -307,3 +307,6 @@ fieldset.panel { margin: 0; }
 .sheet > * { flex-shrink: 0; }
 
 .code-big { font-family: var(--display); font-weight: 800; font-size: 44px; letter-spacing: .12em; text-align: center; padding: 14px; border-radius: 14px; background: var(--soft); font-variant-numeric: tabular-nums; user-select: all; }
+
+.btn.danger-ghost { background: none; color: var(--occ); border: 1px solid color-mix(in srgb, var(--occ) 50%, var(--line)); }
+.btn.danger-ghost.armed { background: var(--occ); color: #fff; }

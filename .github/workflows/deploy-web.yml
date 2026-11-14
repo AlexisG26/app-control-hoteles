@@ -32,7 +32,7 @@ jobs:
             echo "::error::Falta la variable API_URL (Settings → Secrets and variables → Actions → Variables)."
             exit 1
           fi
-          printf "self.APP_CONFIG = { API_URL: '%s' };\n" "$API_URL" > web/config.js
+          printf "self.APP_CONFIG = { API_URL: '%s', VERSION: '%s' };\n" "$API_URL" "${GITHUB_SHA::7}" > web/config.js
           # Nueva versión del service worker en cada publicación, para que los teléfonos se actualicen.
           sed -i "s/const VERSION = 'v1';/const VERSION = '${GITHUB_SHA::8}';/" web/sw.js
 

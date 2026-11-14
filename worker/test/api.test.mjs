@@ -425,6 +425,23 @@ test('código de acceso generado por gerencia, sin correo', async () => {
   assert.equal((await api('POST', '/api/auth/verify', { body: { email: 'andrea@example.com', code: c2.data.code } })).status, 200);
 });
 
+test('eliminar usuario: cierra su acceso, libera el correo y conserva el historial', async () => {
+  const u = (await api('POST', '/api/users', { token: owner, body: { email: 'temporal@example.com', name: 'Temporal', memberships: [{ hotel_id: 'prado', role: 'recepcion' }] } })).data;
+  const t = await login('temporal@example.com');
+  await api('POST', '/api/hotels/prado/sales', { token: t, body: { concept: 'Agua', amount: 20, pay: 'Efectivo' } });
+  assert.equal((await api('DELETE', `/api/users/${u.id}`, { token: conta })).status, 403);
+  assert.equal((await api('DELETE', `/api/users/${u.id}`, { token: owner })).status, 200);
+  assert.equal((await api('GET', '/api/me', { token: t })).status, 401);
+  assert.equal((await api('GET', '/api/users', { token: owner })).data.some((x) => x.id === u.id), false);
+  const hist = (await api('GET', `/api/hotels/prado/sales?from=${localDate(env)}&to=${localDate(env)}`, { token: owner })).data.find((x) => x.concept === 'Agua');
+  assert.equal(hist.by_name, 'Temporal');
+  // El correo queda libre para volver a crearlo
+  assert.equal((await api('POST', '/api/users', { token: owner, body: { email: 'temporal@example.com', name: 'Temporal 2' } })).status, 200);
+  // No se puede eliminar a gerencia
+  const owners = (await api('GET', '/api/users', { token: owner })).data.filter((x) => x.is_owner);
+  assert.equal((await api('DELETE', `/api/users/${owners[0].id}`, { token: owner })).status, 400);
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });
