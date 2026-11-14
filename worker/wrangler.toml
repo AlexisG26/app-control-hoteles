@@ -32,5 +32,5 @@ OWNER_NAME = "Alexis Gutiérrez"
 VAPID_SUBJECT = "mailto:TU-CORREO@ejemplo.com"
 # VAPID_PUBLIC_KEY se carga como variable; ver docs/PUESTA-EN-MARCHA.md
 
-# Secretos (se cargan con `wrangler secret put` o desde GitHub Actions, nunca aquí):
+# Secretos (los carga GitHub Actions en cada publicación; nunca van aquí):
 #   OWNER_EMAIL, AUTH_PEPPER, RESEND_API_KEY, MAIL_FROM, VAPID_PRIVATE_JWK, VAPID_PUBLIC_KEY, TELEGRAM_BOT_TOKEN (opcional)
