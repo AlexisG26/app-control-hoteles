@@ -1,4 +1,4 @@
-// Service worker: funciona sin conexión para abrir la app y recibe los avisos push.
+// Service worker: abre la app sin conexión y recibe los avisos push.
 importScripts('config.js');
 const VERSION = 'v1';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon.svg'];
