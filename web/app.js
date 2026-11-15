@@ -650,6 +650,57 @@ const typeRate = (h, t, credit) => {
   return Number.isFinite(v) ? v : null;
 };
 
+// ---------------- Calendario de estadía ----------------
+// Marca los días que se queda el huésped. mode 'end': la entrada es fija y se toca el día de salida.
+// mode 'range': se toca el día de entrada y luego el de salida (para reservas de días anteriores).
+const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+function stayCalendar(el, { start, end, mode = 'end', maxStart = null, maxNights = 120, onChange }) {
+  let s = start; let e = end; let picking = 'end';
+  let view = s.slice(0, 7);
+  const today = hnDate();
+  const shiftMonth = (ym, k) => { const [y, m] = ym.split('-').map(Number); const d = new Date(Date.UTC(y, m - 1 + k, 1)); return d.toISOString().slice(0, 7); };
+  const nightsOf = (a, b) => Math.round((parseD(b) - parseD(a)) / 86400000);
+  const draw = () => {
+    const first = `${view}-01`;
+    const offset = (parseD(first).getUTCDay() + 6) % 7;
+    const days = new Date(Date.UTC(+view.slice(0, 4), +view.slice(5, 7), 0)).getUTCDate();
+    const cells = [];
+    for (let i = 0; i < offset; i++) cells.push('<span class="cd blank"></span>');
+    for (let d = 1; d <= days; d++) {
+      const iso = `${view}-${String(d).padStart(2, '0')}`;
+      let off = false;
+      if (mode === 'end') off = iso <= s || nightsOf(s, iso) > maxNights;
+      else off = picking === 'start' ? (maxStart && iso > maxStart) : (iso > s && nightsOf(s, iso) > maxNights) || (iso <= s && maxStart && iso > maxStart);
+      const cls = ['cd', iso === s ? 'st' : '', iso === e ? 'en' : '', iso > s && iso < e ? 'in' : '', iso === today ? 'td' : '', off && iso !== s && iso !== e ? 'off' : ''].join(' ');
+      const tag = iso === s ? '<i>Entra</i>' : iso === e ? '<i>Sale</i>' : '';
+      cells.push(`<button type="button" class="${cls}" data-day="${iso}" ${off && iso !== s && iso !== e ? 'disabled' : ''} aria-label="${hnDay(parseD(iso))}${tag ? ', ' + tag.replace(/<\/?i>/g, '') : ''}">${d}${tag}</button>`);
+    }
+    const n = nightsOf(s, e);
+    el.innerHTML = `<div class="cal">
+      <div class="cal-head"><button type="button" class="mini" data-mv="-1" aria-label="Mes anterior">‹</button><b>${MONTH_NAMES[+view.slice(5, 7) - 1]} ${view.slice(0, 4)}</b><button type="button" class="mini" data-mv="1" aria-label="Mes siguiente">›</button></div>
+      <div class="cal-grid">${['L', 'M', 'M', 'J', 'V', 'S', 'D'].map((w) => `<span class="cw">${w}</span>`).join('')}${cells.join('')}</div>
+      <p class="hint cal-foot">${mode === 'range' && picking === 'end' ? 'Ahora toca el día de salida.' : mode === 'range' ? 'Toca el día de entrada y luego el de salida.' : 'Toca el día en que se va.'} <b>${n} noche${n === 1 ? '' : 's'}</b> · del ${hnShort(parseD(s))} al ${hnShort(parseD(e))}</p>
+    </div>`;
+  };
+  el.addEventListener('click', (ev) => {
+    const mv = ev.target.closest('[data-mv]');
+    if (mv) { view = shiftMonth(view, +mv.dataset.mv); draw(); return; }
+    const b = ev.target.closest('[data-day]');
+    if (!b || b.disabled) return;
+    const d = b.dataset.day;
+    if (mode === 'end') { if (d > s) e = d; }
+    else if (picking === 'start' || d <= s) {
+      if (maxStart && d > maxStart) return;
+      s = d; e = addDays(d, 1); picking = 'end';
+    } else { e = d; picking = 'start'; }
+    draw(); onChange?.(s, e);
+  });
+  draw();
+  return {
+    set(ns, ne) { s = ns; e = ne; if (e.slice(0, 7) !== view && s.slice(0, 7) !== view) view = s.slice(0, 7); draw(); },
+  };
+}
+
 function roomSheet(h, r) {
   const issueBtn = '<button class="btn ghost" id="issue">Reportar un problema</button>';
   if (r.status === 'libre') {
@@ -662,8 +713,9 @@ function roomSheet(h, r) {
       <div id="g-n" class="stack">
         ${roomTypes(h).length ? `<div class="seg types" role="group" aria-label="Tipo de habitación">${roomTypes(h).map((t, i) => `<button type="button" data-type="${esc(t)}" aria-pressed="${i === 0}">${esc(t)}<small data-tprice="${esc(t)}"></small></button>`).join('')}</div>` : ''}
         <div class="seg stay" role="group" aria-label="Duración">${[[1, '1 noche'], [2, '2'], [3, '3'], [7, '1 semana'], [30, '1 mes']].map(([n, l]) => `<button type="button" data-nights="${n}" aria-pressed="${n === 1}">${l}</button>`).join('')}</div>
-        <div class="row"><label>Noches<input id="f-n" type="number" min="1" max="120" value="1" inputmode="numeric"></label>
-          <label>Sale el<input id="f-out" type="date" min="${addDays(hnDate(), 1)}" value="${addDays(hnDate(), 1)}"></label></div>
+        <label>Noches<input id="f-n" type="number" min="1" max="120" value="1" inputmode="numeric"></label>
+        <input id="f-out" type="hidden" value="${addDays(hnDate(), 1)}">
+        <div id="cal"></div>
         <label>Precio por noche (L)<input id="f-p" type="number" min="0" step="any" inputmode="decimal" value="${LS.get('ch-rate-' + h.id, '')}"></label>
         <p class="hint" id="rateHint"></p>
         ${h.tax_isv || h.tax_tourism ? `<p class="hint">Precio con ISV ${h.tax_isv}% y Turismo ${h.tax_tourism}% incluidos.</p>` : ''}
@@ -679,17 +731,15 @@ function roomSheet(h, r) {
       // Varios días: noches, fecha de salida y atajos se mantienen sincronizados
       const today = hnDate();
       const syncChips = () => $('sheetHost').querySelectorAll('[data-nights]').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.nights === +$('f-n').value)));
+      const cal = stayCalendar($('cal'), {
+        start: today, end: addDays(today, 1),
+        onChange: (st, en) => { const n = Math.round((parseD(en) - parseD(st)) / 86400000); $('f-n').value = n; $('f-out').value = en; syncChips(); upd(); },
+      });
       const setNights = (n) => {
         n = Math.min(120, Math.max(1, Math.floor(+n || 1)));
-        $('f-n').value = n; $('f-out').value = addDays(today, n); syncChips(); upd();
+        $('f-n').value = n; $('f-out').value = addDays(today, n); cal.set(today, addDays(today, n)); syncChips(); upd();
       };
       $('sheetHost').querySelectorAll('[data-nights]').forEach((b) => { b.onclick = () => setNights(b.dataset.nights); });
-      $('f-out').onchange = () => {
-        const v = $('f-out').value;
-        if (!v || v <= today) { $('f-out').value = addDays(today, +$('f-n').value || 1); return; }
-        const n = Math.round((parseD(v) - parseD(today)) / 86400000);
-        $('f-n').value = Math.min(120, n); syncChips(); upd();
-      };
       // Precio según tipo: tarifa de empresa si es empresa de crédito; si no, tarifa de clientes; si no hay, el último usado para ese tipo.
       const applyRate = (fromTypeClick) => {
         const credit = isCredit(h, $('f-co').value);
@@ -733,7 +783,7 @@ function roomSheet(h, r) {
       const setType = (x) => { hourly = x; $('g-n').hidden = x; $('g-h').hidden = !x; $('ty-n').setAttribute('aria-pressed', !x); $('ty-h').setAttribute('aria-pressed', x); upd(); };
       if (hourOK) { $('ty-n').onclick = () => setType(false); $('ty-h').onclick = () => setType(true); }
       ['f-p', 'f-h', 'f-hm'].forEach((id) => { $(id).oninput = upd; });
-      $('f-n').oninput = () => { const n = Math.floor(+$('f-n').value || 0); if (n >= 1) { $('f-out').value = addDays(today, Math.min(120, n)); syncChips(); } upd(); };
+      $('f-n').oninput = () => { const n = Math.floor(+$('f-n').value || 0); if (n >= 1) { const m = Math.min(120, n); $('f-out').value = addDays(today, m); cal.set(today, addDays(today, m)); syncChips(); } upd(); };
       upd(); bindPay();
       $('c').onclick = closeSheet;
       $('issue').onclick = () => issueSheet(h, r);
@@ -761,11 +811,21 @@ function roomSheet(h, r) {
       <div class="row">${isH
         ? '<label>Horas extra<input id="f-x" type="number" min="1" value="1" inputmode="numeric"></label><label>Monto (L)<input id="f-xm" type="number" min="0" step="any" inputmode="decimal"></label>'
         : `<label>Noches extra<input id="f-x" type="number" min="1" value="1" inputmode="numeric"></label>${r.credit ? '' : `<label>Precio por noche (L)<input id="f-xm" type="number" min="0" step="any" inputmode="decimal" value="${r.rate ?? h.default_rate}"></label>`}`}</div>
+      ${isH ? '' : '<div id="calx"></div>'}
       ${r.credit ? '<p class="hint">Empresa de crédito: el sistema aplica su tarifa.</p>' : ''}
       ${payFields(h)}<div class="err" id="err"></div>
       <div class="row"><button class="btn ghost" id="c">Cerrar</button><button class="btn" id="ext">${isH ? 'Cobrar y agregar' : 'Cobrar y extender'}</button></div>
       ${issueBtn}`, () => {
       bindPay();
+      if (!isH) {
+        // Calendario: desde la salida actual, toca el nuevo día de salida
+        const from = hnDate(r.due_out_at) < hnDate() ? hnDate() : hnDate(r.due_out_at);
+        const calx = stayCalendar($('calx'), {
+          start: from, end: addDays(from, 1),
+          onChange: (st, en) => { $('f-x').value = Math.round((parseD(en) - parseD(st)) / 86400000); },
+        });
+        $('f-x').oninput = () => { const n = Math.floor(+$('f-x').value || 0); if (n >= 1) calx.set(from, addDays(from, Math.min(120, n))); };
+      }
       $('c').onclick = closeSheet;
       $('issue').onclick = () => issueSheet(h, r);
       if ($('payNow')) $('payNow').onclick = async () => {
@@ -1195,13 +1255,14 @@ async function pastStaySheet(h, last = {}) {
   sheet(`<h3>Reserva de días anteriores</h3>
     <p class="hint">Si la estadía ya terminó, queda en el historial y en las ventas de ese día. Si todavía sigue, la habitación queda ocupada hasta su salida.</p>
     <div class="row">
-      <label>Fecha de entrada<input id="p-d" type="date" max="${today}" value="${last.date || addDays(today, -1)}"></label>
+      <input id="p-d" type="hidden" value="${last.date || addDays(today, -1)}">
       <label>Habitación<select id="p-r">${rooms.map((r) => `<option value="${r.id}" ${String(last.room_id) === String(r.id) ? 'selected' : ''}>${esc(r.number)}${r.status !== 'libre' ? ` (${statusLabel[r.status].toLowerCase()} ahora)` : ''}</option>`).join('')}</select></label>
     </div>
     <label>Nombre del huésped<input id="p-g" autocomplete="off"></label>
     <label>Empresa (si es a crédito o por convenio)<input id="p-co" list="p-companies" autocomplete="off" placeholder="Opcional">
       <datalist id="p-companies">${(h.companies || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
     ${types.length ? `<div class="seg types" role="group" aria-label="Tipo de habitación">${types.map((t, i) => `<button type="button" data-ptype="${esc(t)}" aria-pressed="${i === 0}">${esc(t)}<small data-pprice="${esc(t)}"></small></button>`).join('')}</div>` : ''}
+    <div id="calp"></div>
     <div class="row"><label>Noches<input id="p-n" type="number" min="1" value="1" inputmode="numeric"></label>
       <label>Precio por noche (L)<input id="p-p" type="number" min="0" step="any" inputmode="decimal"></label></div>
     ${payFields(h)}
@@ -1221,7 +1282,12 @@ async function pastStaySheet(h, last = {}) {
     const setRate = () => { const v = roomType ? typeRate(h, roomType, isCredit(h, $('p-co').value)) : null; if (v !== null) $('p-p').value = v; upd(); };
     $('sheetHost').querySelectorAll('[data-ptype]').forEach((t) => { t.onclick = () => { roomType = t.dataset.ptype; $('sheetHost').querySelectorAll('[data-ptype]').forEach((x) => x.setAttribute('aria-pressed', x === t)); setRate(); }; });
     $('p-co').onchange = () => { if (isCredit(h, $('p-co').value) && $('f-pay').value === 'Efectivo') { $('f-pay').value = 'Pendiente'; $('f-pay').dispatchEvent(new Event('change')); } setRate(); };
-    ['p-d', 'p-n', 'p-p'].forEach((id) => { $(id).oninput = upd; });
+    const calp = stayCalendar($('calp'), {
+      start: $('p-d').value, end: addDays($('p-d').value, 1), mode: 'range', maxStart: today,
+      onChange: (st, en) => { $('p-d').value = st; $('p-n').value = Math.round((parseD(en) - parseD(st)) / 86400000); upd(); },
+    });
+    $('p-n').oninput = () => { const n = Math.floor(+$('p-n').value || 0); if (n >= 1) calp.set($('p-d').value, addDays($('p-d').value, Math.min(120, n))); upd(); };
+    $('p-p').oninput = upd;
     bindPay(); setRate();
     $('c').onclick = closeSheet;
     const save = async (btn, more) => {
