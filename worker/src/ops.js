@@ -5,9 +5,9 @@ import {
 import { can, requireRole, rolesIn } from './auth.js';
 import { notify, usersWithRole } from './notify.js';
 
-export const PAY = ['Efectivo', 'Tarjeta', 'Transferencia', 'Orden de compra', 'Pendiente'];
+export const PAY = ['Efectivo', 'Tarjeta', 'Transferencia', 'PayPal', 'Orden de compra', 'Pendiente'];
 /** Formas con las que se liquida una cuenta pendiente. */
-export const PAY_NOW = ['Efectivo', 'Tarjeta', 'Transferencia'];
+export const PAY_NOW = ['Efectivo', 'Tarjeta', 'Transferencia', 'PayPal'];
 /** Condición SQL: filas que sí son dinero recibido (lo pendiente no cuenta hasta que se paga). */
 const CASH = `pay <> 'Pendiente'`;
 
@@ -451,7 +451,7 @@ export async function payPending(env, user, saleId, { pay, nights, amount, photo
   if (!s || s.pay !== 'Pendiente' || s.voided_at) throw notFound('Cuenta pendiente no encontrada.');
   requireRole(user, s.hotel_id, 'recepcion', 'contabilidad');
   if (s.settled_at) throw bad('Esta cuenta ya está pagada.');
-  if (!PAY_NOW.includes(pay)) throw bad('Elige cómo pagó: efectivo, tarjeta o transferencia.');
+  if (!PAY_NOW.includes(pay)) throw bad('Elige cómo pagó: efectivo, tarjeta, transferencia o PayPal.');
   const balance = Math.round((s.amount - s.paid_amount) * 100) / 100;
   const left = Math.max(0, (s.nights || 0) - (s.paid_nights || 0));
   let n = 0;

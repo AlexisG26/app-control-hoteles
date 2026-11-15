@@ -432,7 +432,7 @@ async function viewFinanzas() {
   const tmax = Math.max(1, ...keys.map((k) => Math.max(...f.hotels.map((h) => val(h, k)))));
   const showTrend = keys.length > 1;
   const label = (k, i) => (daily ? (keys.length > 10 && i % Math.ceil(keys.length / 8) !== 0 ? '' : String(parseD(k).getUTCDate())) : MONTHS[Number(k.slice(5)) - 1]);
-  const payColors = { Efectivo: 'var(--free)', Tarjeta: 'var(--cleaning)', Transferencia: 'var(--brass)', 'Orden de compra': 'var(--block)' };
+  const payColors = { Efectivo: 'var(--free)', Tarjeta: 'var(--cleaning)', Transferencia: 'var(--brass)', PayPal: 'var(--paypal)', 'Orden de compra': 'var(--block)' };
   const kindLabel = { hospedaje: 'Por noche', hora: 'Por hora', extra: 'Extras', abono: 'Pagos de pendientes' };
 
   app.innerHTML = header({ global: true, view: '#/finanzas', title: 'Gerencia' }) + `
@@ -598,7 +598,7 @@ function paySheet(h, p) {
       const rest = Math.max(0, p.balance - a);
       const nLeft = byNight ? p.nights_left - Math.min(p.nights_left, +$('f-n').value || 0) : 0;
       $('calc').innerHTML = rest <= 0.009 ? '<b>Queda saldado.</b>' : `Quedará un saldo de <b>${fmt(rest)}</b>${byNight ? ` (${nLeft} noche${nLeft === 1 ? '' : 's'} por pagar)` : ''}.`;
-      $('phReq').textContent = $('f-m').value === 'Transferencia' ? '(obligatoria para transferencia)' : '(opcional)';
+      $('phReq').textContent = $('f-m').value === 'Transferencia' ? '(obligatoria para transferencia)' : $('f-m').value === 'PayPal' ? '(recomendada: captura del pago de PayPal)' : '(opcional)';
     };
     if (byNight) {
       $('f-n').oninput = upd;
@@ -661,8 +661,10 @@ function roomSheet(h, r) {
       ${hourOK ? `<div class="seg" role="group" aria-label="Tipo"><button type="button" id="ty-n" aria-pressed="true">Por noche</button><button type="button" id="ty-h" aria-pressed="false">Por hora</button></div>` : ''}
       <div id="g-n" class="stack">
         ${roomTypes(h).length ? `<div class="seg types" role="group" aria-label="Tipo de habitación">${roomTypes(h).map((t, i) => `<button type="button" data-type="${esc(t)}" aria-pressed="${i === 0}">${esc(t)}<small data-tprice="${esc(t)}"></small></button>`).join('')}</div>` : ''}
-        <div class="row"><label>Noches<input id="f-n" type="number" min="1" value="1" inputmode="numeric"></label>
-        <label>Precio por noche (L)<input id="f-p" type="number" min="0" step="any" inputmode="decimal" value="${LS.get('ch-rate-' + h.id, '')}"></label></div>
+        <div class="seg stay" role="group" aria-label="Duración">${[[1, '1 noche'], [2, '2'], [3, '3'], [7, '1 semana'], [30, '1 mes']].map(([n, l]) => `<button type="button" data-nights="${n}" aria-pressed="${n === 1}">${l}</button>`).join('')}</div>
+        <div class="row"><label>Noches<input id="f-n" type="number" min="1" max="120" value="1" inputmode="numeric"></label>
+          <label>Sale el<input id="f-out" type="date" min="${addDays(hnDate(), 1)}" value="${addDays(hnDate(), 1)}"></label></div>
+        <label>Precio por noche (L)<input id="f-p" type="number" min="0" step="any" inputmode="decimal" value="${LS.get('ch-rate-' + h.id, '')}"></label>
         <p class="hint" id="rateHint"></p>
         ${h.tax_isv || h.tax_tourism ? `<p class="hint">Precio con ISV ${h.tax_isv}% y Turismo ${h.tax_tourism}% incluidos.</p>` : ''}
       </div>
@@ -674,6 +676,20 @@ function roomSheet(h, r) {
       ${issueBtn}`, () => {
       let hourly = false;
       let roomType = roomTypes(h)[0] || null;
+      // Varios días: noches, fecha de salida y atajos se mantienen sincronizados
+      const today = hnDate();
+      const syncChips = () => $('sheetHost').querySelectorAll('[data-nights]').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.nights === +$('f-n').value)));
+      const setNights = (n) => {
+        n = Math.min(120, Math.max(1, Math.floor(+n || 1)));
+        $('f-n').value = n; $('f-out').value = addDays(today, n); syncChips(); upd();
+      };
+      $('sheetHost').querySelectorAll('[data-nights]').forEach((b) => { b.onclick = () => setNights(b.dataset.nights); });
+      $('f-out').onchange = () => {
+        const v = $('f-out').value;
+        if (!v || v <= today) { $('f-out').value = addDays(today, +$('f-n').value || 1); return; }
+        const n = Math.round((parseD(v) - parseD(today)) / 86400000);
+        $('f-n').value = Math.min(120, n); syncChips(); upd();
+      };
       // Precio según tipo: tarifa de empresa si es empresa de crédito; si no, tarifa de clientes; si no hay, el último usado para ese tipo.
       const applyRate = (fromTypeClick) => {
         const credit = isCredit(h, $('f-co').value);
@@ -711,12 +727,13 @@ function roomSheet(h, r) {
         } else {
           const n = Math.max(1, +$('f-n').value || 1);
           const hidden = $('f-p').closest('label').hidden;
-          $('calc').textContent = `${hidden ? 'Tarifa de empresa' : `Total: ${fmt(n * (+$('f-p').value || 0))}`} · Salida automática: ${hnDay(parseD(addDays(hnDate(), n)))}, ${h.checkout_time}`;
+          $('calc').innerHTML = `${n} noche${n > 1 ? 's' : ''} · sale ${hnDay(parseD(addDays(hnDate(), n)))}, ${h.checkout_time}${hidden ? ' · tarifa de empresa' : ` · <b>Total ${fmt(n * (+$('f-p').value || 0))}</b>`}`;
         }
       };
       const setType = (x) => { hourly = x; $('g-n').hidden = x; $('g-h').hidden = !x; $('ty-n').setAttribute('aria-pressed', !x); $('ty-h').setAttribute('aria-pressed', x); upd(); };
       if (hourOK) { $('ty-n').onclick = () => setType(false); $('ty-h').onclick = () => setType(true); }
-      ['f-n', 'f-p', 'f-h', 'f-hm'].forEach((id) => { $(id).oninput = upd; });
+      ['f-p', 'f-h', 'f-hm'].forEach((id) => { $(id).oninput = upd; });
+      $('f-n').oninput = () => { const n = Math.floor(+$('f-n').value || 0); if (n >= 1) { $('f-out').value = addDays(today, Math.min(120, n)); syncChips(); } upd(); };
       upd(); bindPay();
       $('c').onclick = closeSheet;
       $('issue').onclick = () => issueSheet(h, r);

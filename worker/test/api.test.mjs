@@ -473,6 +473,21 @@ test('reservas de días anteriores: historial, ocupación si sigue y sin encimar
   assert.equal(room10.guest, 'Huésped largo');
 });
 
+test('PayPal como forma de pago y estadía de varios días', async () => {
+  const today = localDate(env);
+  const r = await api('POST', '/api/hotels/prokinto/checkin', { token: owner, body: { room_id: await roomId('prokinto', '511'), guest: 'Turista', kind: 'noche', nights: 7, rate: 600, pay: 'PayPal' } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.due_out_at, localToUtc(env, addDays(today, 7), '11:00'));
+  const fin = (await api('GET', `/api/hotels/prokinto/finance?from=${today}&to=${today}`, { token: owner })).data;
+  assert.equal(fin.by_pay.find((x) => x.k === 'PayPal').t, 4200);
+  // Un pendiente también se puede cobrar por PayPal
+  await api('POST', '/api/hotels/prokinto/checkin', { token: owner, body: { room_id: await roomId('prokinto', '508'), guest: 'Paga luego', kind: 'noche', nights: 2, rate: 500, pay: 'Pendiente' } });
+  const pend = (await api('GET', '/api/hotels/prokinto/pending', { token: owner })).data.find((x) => x.room === '508');
+  const paid = await api('POST', `/api/sales/${pend.id}/payments`, { token: owner, body: { pay: 'PayPal', nights: 2 } });
+  assert.equal(paid.data.settled, true);
+  assert.ok((await api('GET', '/api/me', { token: owner })).data.pay.includes('PayPal'));
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });

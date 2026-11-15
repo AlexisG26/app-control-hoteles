@@ -10,6 +10,7 @@
   --block: #6b4c8a; --block-bg: #ece4f4;
   --h1: #1f5e52; --h2: #c27a1a; --h3: #6b4c8a;
   --up: #2f7d4f; --down: #a33a2c;
+  --paypal: #1f6fbf;
   --display: "Bricolage Grotesque", system-ui, sans-serif;
   --body: "Atkinson Hyperlegible", system-ui, -apple-system, sans-serif;
   color-scheme: light;
@@ -25,6 +26,7 @@
     --block: #c5a6e6; --block-bg: #2c2238;
     --h1: #6cc0ab; --h2: #e3a54a; --h3: #c5a6e6;
     --up: #7dd29c; --down: #f08f80;
+    --paypal: #7fb4f0;
     color-scheme: dark;
   }
 }
@@ -310,3 +312,5 @@ fieldset.panel { margin: 0; }
 
 .btn.danger-ghost { background: none; color: var(--occ); border: 1px solid color-mix(in srgb, var(--occ) 50%, var(--line)); }
 .btn.danger-ghost.armed { background: var(--occ); color: #fff; }
+
+.seg.stay button { padding: 7px 4px; font-size: 13px; }
