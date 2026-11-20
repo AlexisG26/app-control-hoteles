@@ -77,13 +77,13 @@ function homeRoute() {
   const h = me.hotels[0];
   if (!h) return '#/ajustes';
   const order = [['recepcion', 'recepcion'], ['limpieza', 'limpieza'], ['mantenimiento', 'problemas'], ['contabilidad', 'contabilidad']];
-  for (const [role, view] of order) if (h.roles.includes(role)) return `#/hotel/${h.id}/${view}`;
+  for (const [role, view] of order) if (h.roles.includes(role) && hotelTabs(h).some((t) => t[0] === view)) return `#/hotel/${h.id}/${view}`;
   return '#/ajustes';
 }
 function hotelTabs(h) {
   const t = [];
   if (h.roles.includes('recepcion')) t.push(['recepcion', 'Habitaciones', 'key']);
-  if (h.roles.includes('limpieza')) t.push(['limpieza', 'Limpieza', 'broom']);
+  if (h.roles.includes('limpieza') && h.cleaning !== 0) t.push(['limpieza', 'Limpieza', 'broom']);
   if (h.roles.some((r) => ['recepcion', 'limpieza', 'mantenimiento'].includes(r))) t.push(['problemas', 'Problemas', 'wrench']);
   if (h.roles.includes('contabilidad')) t.push(['contabilidad', 'Contabilidad', 'cash']);
   return t;
@@ -848,7 +848,7 @@ function roomSheet(h, r) {
     }[r.status];
     sheet(`<h3>Hab. ${esc(r.number)} · ${statusLabel[r.status]}</h3><p class="hint">${msg}</p>
       ${r.open_issues ? `<a class="btn ghost" href="#/hotel/${h.id}/problemas">Ver problemas (${r.open_issues})</a>` : ''}
-      ${has(h.id, 'limpieza') && r.status !== 'bloqueada' ? `<button class="btn" id="cl">${r.status === 'limpiando' ? 'Marcar limpia' : 'Empezar limpieza'}</button>` : ''}
+      ${has(h.id, 'limpieza') && h.cleaning !== 0 && r.status !== 'bloqueada' ? `<button class="btn" id="cl">${r.status === 'limpiando' ? 'Marcar limpia' : 'Empezar limpieza'}</button>` : ''}
       ${stayAgainBtn(h, r)}
       <div class="err" id="err"></div>
       <div class="row"><button class="btn ghost" id="c">Cerrar</button></div>${issueBtn}`, () => {
@@ -1321,6 +1321,7 @@ async function viewAjustes() {
         <label>Empresas con crédito (separadas por coma)<input id="comp-${h.id}" value="${esc((h.companies || []).join(', '))}"></label>
         <div class="row"><label>ISV incluido (%)<input type="number" id="isv-${h.id}" value="${h.tax_isv}" inputmode="decimal"></label>
           <label>Turismo incluido (%)<input type="number" id="tur-${h.id}" value="${h.tax_tourism}" inputmode="decimal"></label></div>
+        <label class="check"><input type="checkbox" id="cln-${h.id}" ${h.cleaning !== 0 ? 'checked' : ''}> Control de limpieza (al salir el huésped la habitación queda "por limpiar" y se avisa a limpieza)</label>
         <button class="btn ghost" data-savehotel="${h.id}">Guardar ${esc(h.name.replace('Hostal ', ''))}</button></fieldset>`).join('')}
     </section>
     <section class="panel">
@@ -1351,7 +1352,7 @@ async function viewAjustes() {
       const company_rates = parseRates($('crates-' + id).value);
       const companies = $('comp-' + id).value.split(',').map((x) => x.trim()).filter(Boolean);
       try {
-        await api('PATCH', `/api/hotels/${id}`, { checkout_time: $('co-' + id).value, default_rate: +$('rt-' + id).value, rates, company_rates, companies, tax_isv: +$('isv-' + id).value, tax_tourism: +$('tur-' + id).value });
+        await api('PATCH', `/api/hotels/${id}`, { checkout_time: $('co-' + id).value, default_rate: +$('rt-' + id).value, rates, company_rates, companies, tax_isv: +$('isv-' + id).value, tax_tourism: +$('tur-' + id).value, cleaning: $('cln-' + id).checked });
         me = null; toast('Hotel actualizado'); render();
       }
       catch (e) { toast(e.message); }

@@ -258,8 +258,13 @@ on('PATCH', '/api/hotels/:hotel', async ({ req, env, user, p }) => {
   let companies = h.companies;
   if (Array.isArray(b.companies)) companies = JSON.stringify(b.companies.map((c) => cleanStr(c, 80)).filter(Boolean).slice(0, 50));
   const pct = (v, d) => (Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 50 ? Number(v) : d);
-  await env.DB.prepare('UPDATE hotels SET checkout_time = ?, default_rate = ?, rates = ?, company_rates = ?, companies = ?, tax_isv = ?, tax_tourism = ? WHERE id = ?')
-    .bind(time, rate, rates, companyRates, companies, pct(b.tax_isv, h.tax_isv), pct(b.tax_tourism, h.tax_tourism), h.id).run();
+  const cleaning = typeof b.cleaning === 'boolean' ? (b.cleaning ? 1 : 0) : h.cleaning;
+  await env.DB.prepare('UPDATE hotels SET checkout_time = ?, default_rate = ?, rates = ?, company_rates = ?, companies = ?, tax_isv = ?, tax_tourism = ?, cleaning = ? WHERE id = ?')
+    .bind(time, rate, rates, companyRates, companies, pct(b.tax_isv, h.tax_isv), pct(b.tax_tourism, h.tax_tourism), cleaning, h.id).run();
+  if (!cleaning && h.cleaning) {
+    await env.DB.prepare("UPDATE rooms SET status = 'libre' WHERE hotel_id = ? AND status IN ('por_limpiar','limpiando')").bind(h.id).run();
+    await env.DB.prepare('UPDATE cleanings SET finished_at = ? WHERE hotel_id = ? AND finished_at IS NULL').bind(Date.now(), h.id).run();
+  }
   await audit(env, user, 'hotel_editado', 'hotel', h.id, { checkout_time: time, default_rate: rate, rates, companies });
   return json({ ok: true });
 });

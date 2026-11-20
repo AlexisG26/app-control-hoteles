@@ -61,6 +61,9 @@ async function login(email) {
 let owner, recep, limpia, conta;
 const roomId = async (hotel, number) => (await env.DB.prepare('SELECT id FROM rooms WHERE hotel_id=? AND number=?').bind(hotel, number).first()).id;
 
+// Las pruebas del flujo de limpieza usan Prado; en producción Prado no lleva control de limpieza (se prueba aparte).
+await env.DB.prepare("UPDATE hotels SET cleaning = 1 WHERE id = 'prado'").run();
+
 test('el dueño entra con código por correo', async () => {
   owner = await login('alexis@example.com');
   const me = await api('GET', '/api/me', { token: owner });
@@ -607,6 +610,28 @@ test('PayPal en dólares: tasa del día siguiente, estimada mientras tanto y lo 
   // Y de vuelta a efectivo: se quitan los dólares
   await api('PATCH', `/api/sales/${ext.id}`, { token: owner, body: { pay: 'Efectivo' } });
   assert.equal((await env.DB.prepare('SELECT usd_amount FROM sales WHERE id = ?').bind(ext.id).first()).usd_amount, null);
+});
+
+test('hotel sin control de limpieza (Prado): al salir queda libre, sin aviso ni pestaña', async () => {
+  await env.DB.prepare("UPDATE hotels SET cleaning = 0 WHERE id = 'prado'").run();
+  try {
+    const room = await roomId('prado', '6');
+    const r = await api('POST', '/api/hotels/prado/checkin', { token: recep, body: { room_id: room, guest: 'Sin limpieza', kind: 'noche', nights: 1, rate: 1000, pay: 'Efectivo' } });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    const before = (await env.DB.prepare('SELECT COUNT(*) n FROM notifications').first()).n;
+    await api('POST', `/api/stays/${r.data.stay_id}/checkout`, { token: recep });
+    const rm = (await api('GET', '/api/hotels/prado/rooms', { token: recep })).data.find((z) => z.id === room);
+    assert.equal(rm.status, 'libre');
+    assert.equal((await env.DB.prepare('SELECT COUNT(*) n FROM notifications').first()).n, before);
+    assert.equal((await env.DB.prepare('SELECT COUNT(*) n FROM cleanings WHERE room_id = ? AND finished_at IS NULL').bind(room).first()).n, 0);
+    // y si el huésped se queda, se puede extender igual
+    assert.equal(rm.last_stay.id, r.data.stay_id);
+    const x = await api('POST', `/api/stays/${r.data.stay_id}/extend`, { token: recep, body: { nights: 1, rate: 1000, pay: 'Efectivo' } });
+    assert.equal(x.status, 200, JSON.stringify(x.data));
+    await api('POST', `/api/stays/${r.data.stay_id}/checkout`, { token: recep });
+  } finally {
+    await env.DB.prepare("UPDATE hotels SET cleaning = 1 WHERE id = 'prado'").run();
+  }
 });
 
 test('desactivar un usuario cierra sus sesiones', async () => {

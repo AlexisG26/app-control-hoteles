@@ -318,11 +318,16 @@ export async function checkOut(env, user, stayId, mode = 'manual') {
   const room = await getRoom(env, s.room_id);
   const now = Date.now();
   await env.DB.prepare('UPDATE stays SET checked_out_at = ?, checkout_mode = ? WHERE id = ?').bind(now, mode, s.id).run();
+  const hotel = await getHotel(env, s.hotel_id);
+  await audit(env, user, 'salida', 'stay', s.id, { room: room.number, mode });
+  if (hotel.cleaning === 0) {
+    // Hotel con limpieza diaria en persona: la habitación queda disponible de inmediato
+    await setRoom(env, room.id, 'libre', null, user?.id ?? null);
+    return { ok: true, room: room.number };
+  }
   await setRoom(env, room.id, 'por_limpiar', null, user?.id ?? null);
   await env.DB.prepare('INSERT INTO cleanings (hotel_id, room_id, requested_at, source) VALUES (?,?,?,?)')
     .bind(s.hotel_id, room.id, now, mode === 'automatica' ? 'salida_automatica' : 'salida_manual').run();
-  await audit(env, user, 'salida', 'stay', s.id, { room: room.number, mode });
-  const hotel = await getHotel(env, s.hotel_id);
   await notify(env, await usersWithRole(env, s.hotel_id, ['limpieza']), {
     title: `Habitación ${room.number} por limpiar`,
     body: `${hotel.name}: el huésped salió${mode === 'automatica' ? ' (salida automática)' : ''}. Ya puedes limpiarla.`,
