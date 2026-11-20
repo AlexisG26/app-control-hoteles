@@ -553,6 +553,20 @@ test('editar fechas de entrada/salida y forma de pago (2C: de Efectivo a PayPal)
   assert.equal((await api('PATCH', `/api/stays/${r.data.stay_id}`, { token: limpia, body: { pay: 'Tarjeta' } })).status, 403);
 });
 
+test('quitar noches a una estadía con extensión: se ajusta sola sin ir a Contabilidad', async () => {
+  const today = localDate(env);
+  const room = await roomId('prado', '10');
+  const r = await api('POST', '/api/hotels/prado/checkin', { token: recep, body: { room_id: room, guest: 'Acorta', kind: 'noche', nights: 3, rate: 1000, pay: 'Efectivo' } });
+  await api('POST', `/api/stays/${r.data.stay_id}/extend`, { token: recep, body: { nights: 1, rate: 1000, pay: 'PayPal' } });
+  const e = await api('PATCH', `/api/stays/${r.data.stay_id}`, { token: recep, body: { start: today, end: addDays(today, 1) } });
+  assert.equal(e.status, 200, JSON.stringify(e.data));
+  assert.equal(e.data.delta_nights, -3);
+  assert.equal(e.data.delta_amount, -3000);
+  const { results } = await env.DB.prepare('SELECT nights, amount, voided_at FROM sales WHERE stay_id = ? ORDER BY id').bind(r.data.stay_id).all();
+  assert.equal(results[0].nights, 1); assert.equal(results[0].amount, 1000); assert.equal(results[0].voided_at, null);
+  assert.ok(results[1].voided_at);
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });

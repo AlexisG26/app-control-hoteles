@@ -467,6 +467,16 @@ export async function changeSalePay(env, user, saleId, b, { skipAudit = false } 
   return { ok: true, changed: true };
 }
 
+/** Cambia las noches de un cobro manteniendo su precio por noche. Devuelve la diferencia de monto. */
+async function resizeSale(env, x, n, fallbackRate) {
+  const per = x.nights ? x.amount / x.nights : (fallbackRate || 0);
+  const amt = Math.round(n * per * 100) / 100;
+  if (x.pay === 'Pendiente' && x.paid_amount > amt + 0.009) throw bad('Ya se pagaron más noches de las que quedarían. Revisa los pagos primero.');
+  const settled = x.pay === 'Pendiente' ? (x.paid_amount >= amt - 0.009 ? (x.settled_at || Date.now()) : null) : x.settled_at;
+  await env.DB.prepare('UPDATE sales SET nights = ?, amount = ?, settled_at = ? WHERE id = ?').bind(n, amt, settled, x.id).run();
+  return amt - x.amount;
+}
+
 /** Editar una estadía en curso: fechas de entrada y salida (las noches y el cobro se ajustan) y forma de pago. */
 export async function editStay(env, user, stayId, b) {
   const st = await openStay(env, stayId);
@@ -494,17 +504,31 @@ export async function editStay(env, user, stayId, b) {
       "SELECT * FROM sales WHERE stay_id = ? AND kind = 'hospedaje' AND voided_at IS NULL ORDER BY id",
     ).bind(st.id).all();
     const delta = nights - st.nights;
-    if (delta && sales.length) {
+    if (delta > 0 && sales.length) {
+      // Noches de más: se suman al último cobro, con su mismo precio por noche
       const last = sales[sales.length - 1];
-      const ln = last.nights + delta;
-      if (ln < 1) throw bad('Para quitar tantas noches, anula primero la extensión en Contabilidad.');
-      const per = last.nights ? last.amount / last.nights : (st.rate || 0);
-      const amt = Math.round(ln * per * 100) / 100;
-      if (last.pay === 'Pendiente' && last.paid_amount > amt + 0.009) throw bad('Ya se pagaron más noches de las que quedarían. Revisa los pagos primero.');
-      const settled = last.pay === 'Pendiente' ? (last.paid_amount >= amt - 0.009 ? (last.settled_at || Date.now()) : null) : last.settled_at;
-      await env.DB.prepare('UPDATE sales SET nights = ?, amount = ?, settled_at = ? WHERE id = ?').bind(ln, amt, settled, last.id).run();
-      out.delta_amount = Math.round((amt - last.amount) * 100) / 100;
+      out.delta_amount += await resizeSale(env, last, last.nights + delta, st.rate);
+    } else if (delta < 0 && sales.length) {
+      // Noches de menos: se quitan desde el cobro más reciente; una extensión que queda en 0 se anula sola
+      let left = -delta;
+      for (let i = sales.length - 1; i >= 0 && left > 0; i--) {
+        const x = sales[i];
+        const keep = i === 0 ? 1 : 0;
+        const take = Math.min(left, Math.max(0, x.nights - keep));
+        if (!take) continue;
+        const n = x.nights - take;
+        if (n === 0) {
+          if (x.pay === 'Pendiente' && x.paid_amount > 0.009) throw bad('Esa extensión ya tiene pagos registrados. Revisa los pagos antes de quitar esas noches.');
+          await env.DB.prepare('UPDATE sales SET voided_at = ?, voided_by = ?, void_reason = ? WHERE id = ?')
+            .bind(Date.now(), user.id, 'Ajuste de fechas de la estadía', x.id).run();
+          out.delta_amount -= x.amount;
+        } else {
+          out.delta_amount += await resizeSale(env, x, n, st.rate);
+        }
+        left -= take;
+      }
     }
+    out.delta_amount = Math.round(out.delta_amount * 100) / 100;
     if (sales.length && start !== localDate(env, st.check_in_at)) {
       await env.DB.prepare('UPDATE sales SET local_date = ?, ts = ? WHERE id = ?').bind(start, inAt, sales[0].id).run();
     }
