@@ -488,6 +488,36 @@ test('PayPal como forma de pago y estadía de varios días', async () => {
   assert.ok((await api('GET', '/api/me', { token: owner })).data.pay.includes('PayPal'));
 });
 
+test('ProKinto: extender 2 noches estando el huésped, y también si ya salió hoy y se queda', async () => {
+  const today = localDate(env);
+  const room = await roomId('prokinto', '507');
+  const r = await api('POST', '/api/hotels/prokinto/checkin', { token: owner, body: { room_id: room, guest: 'Cliente que se queda', kind: 'noche', nights: 1, rate: 700, pay: 'Efectivo' } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const x = await api('POST', `/api/stays/${r.data.stay_id}/extend`, { token: owner, body: { nights: 2, rate: 700, pay: 'Tarjeta' } });
+  assert.equal(x.status, 200, JSON.stringify(x.data));
+  assert.equal(x.data.due_out_at, localToUtc(env, addDays(today, 3), '11:00'));
+  // Sale (salida registrada), pero decide quedarse: se vuelve a ocupar y se extiende desde hoy
+  await api('POST', `/api/stays/${r.data.stay_id}/checkout`, { token: owner });
+  let rm = (await api('GET', '/api/hotels/prokinto/rooms', { token: owner })).data.find((z) => z.id === room);
+  assert.equal(rm.status, 'por_limpiar');
+  assert.equal(rm.last_stay.id, r.data.stay_id);
+  const again = await api('POST', `/api/stays/${r.data.stay_id}/extend`, { token: owner, body: { nights: 2, rate: 700, pay: 'Efectivo' } });
+  assert.equal(again.status, 200, JSON.stringify(again.data));
+  assert.equal(again.data.due_out_at, localToUtc(env, addDays(today, 5), '11:00'));
+  rm = (await api('GET', '/api/hotels/prokinto/rooms', { token: owner })).data.find((z) => z.id === room);
+  assert.equal(rm.status, 'ocupada');
+  assert.equal(rm.stay_id, r.data.stay_id);
+  const open = await env.DB.prepare('SELECT COUNT(*) n FROM cleanings WHERE room_id = ? AND finished_at IS NULL').bind(room).first();
+  assert.equal(open.n, 0);
+  // Con otro huésped ya en la habitación, la estadía anterior no se puede reabrir
+  await api('POST', `/api/stays/${r.data.stay_id}/checkout`, { token: owner });
+  await env.DB.prepare("UPDATE rooms SET status = 'libre' WHERE id = ?").bind(room).run();
+  const n2 = await api('POST', '/api/hotels/prokinto/checkin', { token: owner, body: { room_id: room, guest: 'Otro', kind: 'noche', nights: 1, rate: 700, pay: 'Efectivo' } });
+  assert.equal(n2.status, 200);
+  const no = await api('POST', `/api/stays/${r.data.stay_id}/extend`, { token: owner, body: { nights: 1, rate: 700, pay: 'Efectivo' } });
+  assert.equal(no.status, 400);
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });

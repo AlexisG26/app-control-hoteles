@@ -706,6 +706,7 @@ function roomSheet(h, r) {
   if (r.status === 'libre') {
     const hourOK = !!h.allow_hourly;
     sheet(`<h3>Entrada · Hab. ${esc(r.number)}</h3>
+      ${stayAgainBtn(h, r)}
       <label>Nombre del huésped<input id="f-g" autocomplete="off"></label>
       <label>Empresa (si es a crédito o por convenio)<input id="f-co" list="companies" autocomplete="off" placeholder="Opcional">
         <datalist id="companies">${(h.companies || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
@@ -785,6 +786,7 @@ function roomSheet(h, r) {
       ['f-p', 'f-h', 'f-hm'].forEach((id) => { $(id).oninput = upd; });
       $('f-n').oninput = () => { const n = Math.floor(+$('f-n').value || 0); if (n >= 1) { const m = Math.min(120, n); $('f-out').value = addDays(today, m); cal.set(today, addDays(today, m)); syncChips(); } upd(); };
       upd(); bindPay();
+      if ($('again')) $('again').onclick = () => extendAgainSheet(h, r);
       $('c').onclick = closeSheet;
       $('issue').onclick = () => issueSheet(h, r);
       $('ok').onclick = (e) => act(e.target, async () => {
@@ -806,26 +808,13 @@ function roomSheet(h, r) {
       <p><b>${esc(r.guest)}</b></p>
       <p class="hint">Entró ${hnShort(r.check_in_at)} ${hnTime(r.check_in_at)} · ${isH ? 'Hasta las ' + hnTime(r.due_out_at) + ' (salida manual)' : 'Salida automática ' + hnDay(r.due_out_at) + ', ' + hnTime(r.due_out_at)}</p>
       ${r.pending_balance > 0 ? `<button class="btn" id="payNow">Debe ${fmt(r.pending_balance)} · Registrar pago</button>` : ''}
+      ${extendForm(h, r, isH)}
+      <div class="err" id="err"></div>
+      <button class="btn" id="ext">${isH ? 'Cobrar y agregar' : 'Cobrar y extender'}</button>
       <button class="btn warn" id="out">Registrar salida ahora</button>
-      <h3 style="font-size:17px;margin-top:6px">${isH ? 'Agregar tiempo' : 'Extender estadía'}</h3>
-      <div class="row">${isH
-        ? '<label>Horas extra<input id="f-x" type="number" min="1" value="1" inputmode="numeric"></label><label>Monto (L)<input id="f-xm" type="number" min="0" step="any" inputmode="decimal"></label>'
-        : `<label>Noches extra<input id="f-x" type="number" min="1" value="1" inputmode="numeric"></label>${r.credit ? '' : `<label>Precio por noche (L)<input id="f-xm" type="number" min="0" step="any" inputmode="decimal" value="${r.rate ?? h.default_rate}"></label>`}`}</div>
-      ${isH ? '' : '<div id="calx"></div>'}
-      ${r.credit ? '<p class="hint">Empresa de crédito: el sistema aplica su tarifa.</p>' : ''}
-      ${payFields(h)}<div class="err" id="err"></div>
-      <div class="row"><button class="btn ghost" id="c">Cerrar</button><button class="btn" id="ext">${isH ? 'Cobrar y agregar' : 'Cobrar y extender'}</button></div>
+      <div class="row"><button class="btn ghost" id="c">Cerrar</button></div>
       ${issueBtn}`, () => {
-      bindPay();
-      if (!isH) {
-        // Calendario: desde la salida actual, toca el nuevo día de salida
-        const from = hnDate(r.due_out_at) < hnDate() ? hnDate() : hnDate(r.due_out_at);
-        const calx = stayCalendar($('calx'), {
-          start: from, end: addDays(from, 1),
-          onChange: (st, en) => { $('f-x').value = Math.round((parseD(en) - parseD(st)) / 86400000); },
-        });
-        $('f-x').oninput = () => { const n = Math.floor(+$('f-x').value || 0); if (n >= 1) calx.set(from, addDays(from, Math.min(120, n))); };
-      }
+      bindExtend(h, r, isH, r.due_out_at, r.stay_id, isH ? 'Tiempo agregado' : 'Estadía extendida');
       $('c').onclick = closeSheet;
       $('issue').onclick = () => issueSheet(h, r);
       if ($('payNow')) $('payNow').onclick = async () => {
@@ -834,9 +823,6 @@ function roomSheet(h, r) {
         if (p) paySheet(h, p); else toast('No encontré la cuenta pendiente.');
       };
       $('out').onclick = (e) => act(e.target, () => api('POST', `/api/stays/${r.stay_id}/checkout`), `Hab. ${r.number} enviada a limpieza`);
-      $('ext').onclick = (e) => act(e.target, () => api('POST', `/api/stays/${r.stay_id}/extend`,
-        isH ? { hours: +$('f-x').value, amount: +$('f-xm').value, ...payBody() } : { nights: +$('f-x').value, rate: $('f-xm') ? +$('f-xm').value : undefined, ...payBody() }),
-      isH ? 'Tiempo agregado' : 'Estadía extendida');
     });
   } else {
     const msg = {
@@ -847,13 +833,78 @@ function roomSheet(h, r) {
     sheet(`<h3>Hab. ${esc(r.number)} · ${statusLabel[r.status]}</h3><p class="hint">${msg}</p>
       ${r.open_issues ? `<a class="btn ghost" href="#/hotel/${h.id}/problemas">Ver problemas (${r.open_issues})</a>` : ''}
       ${has(h.id, 'limpieza') && r.status !== 'bloqueada' ? `<button class="btn" id="cl">${r.status === 'limpiando' ? 'Marcar limpia' : 'Empezar limpieza'}</button>` : ''}
+      ${stayAgainBtn(h, r)}
       <div class="err" id="err"></div>
       <div class="row"><button class="btn ghost" id="c">Cerrar</button></div>${issueBtn}`, () => {
       $('c').onclick = closeSheet;
+      if ($('again')) $('again').onclick = () => extendAgainSheet(h, r);
       $('issue').onclick = () => issueSheet(h, r);
       if ($('cl')) $('cl').onclick = (e) => act(e.target, () => api('POST', `/api/rooms/${r.id}/clean/${r.status === 'limpiando' ? 'finish' : 'start'}`), 'Listo');
     });
   }
+}
+
+// ---- Extender estadía (también cuando el huésped decide quedarse después de la salida de hoy) ----
+function extendForm(h, r, isH, credit = r.credit, rate = r.rate) {
+  if (isH) return `<h3 style="font-size:17px;margin-top:6px">Agregar tiempo</h3>
+    <div class="row"><label>Horas extra<input id="f-x" type="number" min="1" value="1" inputmode="numeric"></label><label>Monto (L)<input id="f-xm" type="number" min="0" step="any" inputmode="decimal"></label></div>
+    ${payFields(h)}`;
+  const price = rate ?? h.default_rate;
+  return `<h3 style="font-size:17px;margin-top:6px">Extender estadía</h3>
+    <div class="seg stay" role="group" aria-label="Noches extra">${[[1, '+1 noche'], [2, '+2'], [3, '+3'], [7, '+1 semana']].map(([n, l]) => `<button type="button" data-xn="${n}" aria-pressed="${n === 1}">${l}</button>`).join('')}</div>
+    <div class="row"><label>Noches extra<input id="f-x" type="number" min="1" max="120" value="1" inputmode="numeric"></label>${credit ? '' : `<label>Precio por noche (L)<input id="f-xm" type="number" min="0" step="any" inputmode="decimal" value="${price ?? ''}"></label>`}</div>
+    <div id="calx"></div>
+    <p class="hint" id="xcalc"></p>
+    ${credit ? '<p class="hint">Empresa de crédito: el sistema aplica su tarifa.</p>' : ''}
+    ${payFields(h)}`;
+}
+
+function bindExtend(h, r, isH, dueAt, stayId, okMsg) {
+  bindPay();
+  if (!isH) {
+    // Desde la salida actual (o desde hoy si ya pasó), se marcan las noches extra
+    const from = hnDate(dueAt) < hnDate() ? hnDate() : hnDate(dueAt);
+    const calc = () => {
+      const n = Math.max(1, Math.floor(+$('f-x').value || 1));
+      const pr = $('f-xm') ? +$('f-xm').value || 0 : 0;
+      $('xcalc').innerHTML = `Nueva salida: <b>${hnDay(parseD(addDays(from, n)))}, ${h.checkout_time}</b>${$('f-xm') ? ` · Total ${fmt(n * pr)}` : ''}`;
+      $('sheetHost').querySelectorAll('[data-xn]').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.xn === n)));
+    };
+    const calx = stayCalendar($('calx'), {
+      start: from, end: addDays(from, 1),
+      onChange: (st, en) => { $('f-x').value = Math.round((parseD(en) - parseD(st)) / 86400000); calc(); },
+    });
+    const setN = (n) => { $('f-x').value = n; calx.set(from, addDays(from, n)); calc(); };
+    $('sheetHost').querySelectorAll('[data-xn]').forEach((b) => { b.onclick = () => setN(+b.dataset.xn); });
+    $('f-x').oninput = () => { const n = Math.floor(+$('f-x').value || 0); if (n >= 1) { calx.set(from, addDays(from, Math.min(120, n))); calc(); } };
+    if ($('f-xm')) $('f-xm').oninput = calc;
+    calc();
+  }
+  $('ext').onclick = (e) => act(e.target, () => {
+    if (!isH && $('f-xm') && !(+$('f-xm').value > 0)) throw new Error('Escribe el precio por noche.');
+    return api('POST', `/api/stays/${stayId}/extend`,
+      isH ? { hours: +$('f-x').value, amount: +$('f-xm').value, ...payBody() } : { nights: +$('f-x').value, rate: $('f-xm') ? +$('f-xm').value : undefined, ...payBody() });
+  }, okMsg);
+}
+
+function stayAgainBtn(h, r) {
+  if (!r.last_stay || !has(h.id, 'recepcion')) return '';
+  return `<button class="btn" id="again">${esc(r.last_stay.guest)} se queda más noches</button>
+    <p class="hint">Salió hoy (${hnTime(r.last_stay.checked_out_at)}). Si sigue en la habitación, extiende su estadía aquí.</p>`;
+}
+
+function extendAgainSheet(h, r) {
+  const ls = r.last_stay;
+  sheet(`<h3>Hab. ${esc(r.number)} · extender</h3>
+    <p><b>${esc(ls.guest)}</b></p>
+    <p class="hint">La habitación vuelve a quedar ocupada y se cancela la limpieza pendiente.</p>
+    ${extendForm(h, r, false, ls.credit, ls.rate)}
+    <div class="err" id="err"></div>
+    <button class="btn" id="ext">Cobrar y extender</button>
+    <div class="row"><button class="btn ghost" id="c">Cerrar</button></div>`, () => {
+    $('c').onclick = closeSheet;
+    bindExtend(h, r, false, ls.checked_out_at, ls.id, `${ls.guest} sigue en la ${r.number}`);
+  });
 }
 
 function extraSheet(h) {

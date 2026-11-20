@@ -89,7 +89,21 @@ export async function listRooms(env, user, hotelId) {
   ).bind(hotelId).all();
   const hotel = await getHotel(env, hotelId);
   const showCompany = seesCompanyPrices(user, hotelId);
+  // Huésped que salió hoy de una habitación que aún no tiene otro: se puede extender si decide quedarse.
+  const lastOut = new Map();
+  if (can(user, hotelId, 'recepcion')) {
+    const since = localToUtc(env, localDate(env), '00:00');
+    const { results: outs } = await env.DB.prepare(
+      `SELECT id, room_id, guest, company, rate, checked_out_at FROM stays
+        WHERE hotel_id = ? AND kind = 'noche' AND checked_out_at >= ? AND checkout_mode <> 'historico' ORDER BY checked_out_at`,
+    ).bind(hotelId, since).all();
+    for (const o of outs) lastOut.set(o.room_id, o);
+  }
   return results.map((r) => {
+    const o = lastOut.get(r.id);
+    if (o && !r.stay_id && r.status !== 'bloqueada') {
+      r.last_stay = { id: o.id, guest: o.guest, checked_out_at: o.checked_out_at, credit: isCreditCompany(hotel, o.company) && !showCompany, rate: isCreditCompany(hotel, o.company) && !showCompany ? null : o.rate };
+    }
     if (!showGuest) { r.guest = r.guest ? 'Ocupada' : null; r.rate = null; r.pending_balance = 0; r.company = null; }
     else if (!showCompany && isCreditCompany(hotel, r.company)) { r.rate = null; r.pending_balance = 0; r.credit = true; }
     return r;
@@ -155,11 +169,31 @@ async function openStay(env, stayId) {
   return s;
 }
 
+/** ¿Esta estadía terminó hoy y la habitación sigue sin otro huésped? (el cliente decidió quedarse más noches) */
+async function reopenableStay(env, stayId) {
+  const s = await env.DB.prepare('SELECT * FROM stays WHERE id = ?').bind(Number(stayId)).first();
+  if (!s) throw notFound('Estadía no encontrada.');
+  if (!s.checked_out_at) return { s, reopen: false };
+  const room = await getRoom(env, s.room_id);
+  const ok = s.kind === 'noche' && s.checkout_mode !== 'historico' && localDate(env, s.checked_out_at) === localDate(env)
+    && !room.current_stay_id && ['por_limpiar', 'limpiando', 'libre'].includes(room.status)
+    && !(await env.DB.prepare('SELECT 1 FROM stays WHERE room_id = ? AND id <> ? AND check_in_at > ?').bind(s.room_id, s.id, s.checked_out_at).first());
+  if (!ok) throw bad('Esta estadía ya terminó.');
+  return { s, reopen: true };
+}
+
 export async function extendStay(env, user, stayId, b) {
-  const s = await openStay(env, stayId);
+  const { s, reopen } = await reopenableStay(env, stayId);
   requireRole(user, s.hotel_id, 'recepcion');
   const hotel = await getHotel(env, s.hotel_id);
   const room = await getRoom(env, s.room_id);
+  if (reopen) {
+    // El huésped se queda: vuelve a ocupar la habitación y se cancela la limpieza pendiente.
+    await env.DB.prepare('UPDATE stays SET checked_out_at = NULL, checkout_mode = NULL WHERE id = ?').bind(s.id).run();
+    await env.DB.prepare('UPDATE cleanings SET finished_at = ?, finished_by = ?, source = COALESCE(source, \'\') || \' (cancelada: el huésped extendió)\' WHERE room_id = ? AND finished_at IS NULL')
+      .bind(Date.now(), user.id, room.id).run();
+    await setRoom(env, room.id, 'ocupada', s.id, user.id);
+  }
   const p = payInfo(hotel, b);
   let due, amount, nights = 0, hours = 0, concept;
   if (s.kind === 'hora') {
