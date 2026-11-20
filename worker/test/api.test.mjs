@@ -518,6 +518,41 @@ test('ProKinto: extender 2 noches estando el huésped, y también si ya salió h
   assert.equal(no.status, 400);
 });
 
+test('editar fechas de entrada/salida y forma de pago (2C: de Efectivo a PayPal)', async () => {
+  const today = localDate(env);
+  const room = await roomId('prado', '11');
+  const r = await api('POST', '/api/hotels/prado/checkin', { token: recep, body: { room_id: room, guest: 'Huésped 2C', kind: 'noche', nights: 2, rate: 800, pay: 'Efectivo' } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  // Cambiar solo la forma de pago
+  let e = await api('PATCH', `/api/stays/${r.data.stay_id}`, { token: recep, body: { pay: 'PayPal' } });
+  assert.equal(e.status, 200, JSON.stringify(e.data));
+  let rm = (await api('GET', '/api/hotels/prado/rooms', { token: recep })).data.find((z) => z.id === room);
+  assert.equal(rm.pay, 'PayPal');
+  // Entró ayer y se va en 3 días: 4 noches, el cobro sube 2 noches
+  e = await api('PATCH', `/api/stays/${r.data.stay_id}`, { token: recep, body: { start: addDays(today, -1), end: addDays(today, 3) } });
+  assert.equal(e.status, 200, JSON.stringify(e.data));
+  assert.equal(e.data.delta_nights, 2);
+  assert.equal(e.data.delta_amount, 1600);
+  rm = (await api('GET', '/api/hotels/prado/rooms', { token: recep })).data.find((z) => z.id === room);
+  assert.equal(rm.due_out_at, localToUtc(env, addDays(today, 3), '11:00'));
+  assert.equal(rm.nights, 4);
+  const sale = await env.DB.prepare('SELECT * FROM sales WHERE stay_id = ?').bind(r.data.stay_id).first();
+  assert.equal(sale.amount, 3200);
+  assert.equal(sale.local_date, addDays(today, -1));
+  assert.equal(sale.pay, 'PayPal');
+  // Fechas imposibles
+  assert.equal((await api('PATCH', `/api/stays/${r.data.stay_id}`, { token: recep, body: { start: addDays(today, 1), end: addDays(today, 3) } })).status, 400);
+  assert.equal((await api('PATCH', `/api/stays/${r.data.stay_id}`, { token: recep, body: { start: addDays(today, -3), end: addDays(today, -1) } })).status, 400);
+  // Cambiar el pago de un movimiento suelto; un pendiente no se cambia aquí
+  const ch = await api('PATCH', `/api/sales/${sale.id}`, { token: recep, body: { pay: 'Efectivo' } });
+  assert.equal(ch.status, 200, JSON.stringify(ch.data));
+  const pend = await api('POST', '/api/hotels/prokinto/checkin', { token: owner, body: { room_id: await roomId('prokinto', '504'), guest: 'Debe', kind: 'noche', nights: 1, rate: 500, pay: 'Pendiente' } });
+  const ps = await env.DB.prepare('SELECT id FROM sales WHERE stay_id = ?').bind(pend.data.stay_id).first();
+  assert.equal((await api('PATCH', `/api/sales/${ps.id}`, { token: owner, body: { pay: 'Efectivo' } })).status, 400);
+  // Limpieza no puede editar
+  assert.equal((await api('PATCH', `/api/stays/${r.data.stay_id}`, { token: limpia, body: { pay: 'Tarjeta' } })).status, 403);
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });

@@ -531,7 +531,7 @@ async function viewRecepcion(h) {
 
   app.querySelectorAll('[data-room]').forEach((b) => { b.onclick = () => roomSheet(h, rooms.find((r) => r.id === +b.dataset.room)); });
   $('extra').onclick = () => extraSheet(h);
-  bindVoid();
+  bindVoid(h);
   bindPending(h, pending);
   bindProofs();
   autoRefresh();
@@ -627,11 +627,12 @@ function saleRow(s, canVoid) {
   const v = !!s.voided_at;
   const pend = s.pay === 'Pendiente';
   const tag = pend ? (s.settled_at ? ' <span class="tag t-ok">Pagado</span>' : ' <span class="tag t-warn">Pendiente</span>') : '';
-  const acts = [s.proof_key ? `<button class="mini" data-proof="${s.id}">Comprobante</button>` : '', canVoid && !v ? `<button class="mini" data-void="${s.id}">Anular</button>` : ''].join('');
+  const acts = [s.proof_key ? `<button class="mini" data-proof="${s.id}">Comprobante</button>` : '', canVoid && !v && ['Efectivo', 'Tarjeta', 'Transferencia', 'PayPal', 'Orden de compra'].includes(s.pay) ? `<button class="mini" data-repay="${s.id}" data-cur="${esc(s.pay)}">Cambiar pago</button>` : '', canVoid && !v ? `<button class="mini" data-void="${s.id}">Anular</button>` : ''].join('');
   return `<li class="${v ? 'void' : ''} ${pend ? 'is-pend' : ''}"><div class="d">${esc(s.concept)}${tag}<small>${hnTime(s.ts)} · ${esc(s.pay)}${s.po ? ' #' + esc(s.po) : ''}${s.kind === 'abono' && s.paid_nights ? ` · ${s.paid_nights} noche${s.paid_nights > 1 ? 's' : ''}` : ''} · ${esc(s.by_name || '—')}${v ? ` · anulado por ${esc(s.voided_by_name || '')}: ${esc(s.void_reason || '')}` : ''}</small></div>
     <span class="m">${fmt(s.amount)}</span><span class="acts">${acts}</span></li>`;
 }
-function bindVoid() {
+function bindVoid(h) {
+  app.querySelectorAll('[data-repay]').forEach((b) => { b.onclick = () => repaySheet(h, b.dataset.repay, b.dataset.cur); });
   app.querySelectorAll('[data-void]').forEach((b) => {
     b.onclick = () => sheet(`<h3>Anular movimiento</h3><p class="hint">Queda tachado en el registro con tu nombre y el motivo. No se borra.</p>
       <label>Motivo<input id="f-r" placeholder="Ej. cobro duplicado"></label><div class="err" id="err"></div>
@@ -670,7 +671,7 @@ function stayCalendar(el, { start, end, mode = 'end', maxStart = null, maxNights
       const iso = `${view}-${String(d).padStart(2, '0')}`;
       let off = false;
       if (mode === 'end') off = iso <= s || nightsOf(s, iso) > maxNights;
-      else off = picking === 'start' ? (maxStart && iso > maxStart) : (iso > s && nightsOf(s, iso) > maxNights) || (iso <= s && maxStart && iso > maxStart);
+      else off = (iso > s && nightsOf(s, iso) > maxNights) || (iso <= s && maxStart && iso > maxStart);
       const cls = ['cd', iso === s ? 'st' : '', iso === e ? 'en' : '', iso > s && iso < e ? 'in' : '', iso === today ? 'td' : '', off && iso !== s && iso !== e ? 'off' : ''].join(' ');
       const tag = iso === s ? '<i>Entra</i>' : iso === e ? '<i>Sale</i>' : '';
       cells.push(`<button type="button" class="${cls}" data-day="${iso}" ${off && iso !== s && iso !== e ? 'disabled' : ''} aria-label="${hnDay(parseD(iso))}${tag ? ', ' + tag.replace(/<\/?i>/g, '') : ''}">${d}${tag}</button>`);
@@ -689,6 +690,7 @@ function stayCalendar(el, { start, end, mode = 'end', maxStart = null, maxNights
     if (!b || b.disabled) return;
     const d = b.dataset.day;
     if (mode === 'end') { if (d > s) e = d; }
+    else if (picking === 'start' && d > s && maxStart && d > maxStart) { e = d; } // solo cambia la salida
     else if (picking === 'start' || d <= s) {
       if (maxStart && d > maxStart) return;
       s = d; e = addDays(d, 1); picking = 'end';
@@ -806,15 +808,17 @@ function roomSheet(h, r) {
     const isH = r.kind === 'hora';
     sheet(`<h3>Hab. ${esc(r.number)}${isH ? ' · por hora' : ''}</h3>
       <p><b>${esc(r.guest)}</b></p>
-      <p class="hint">Entró ${hnShort(r.check_in_at)} ${hnTime(r.check_in_at)} · ${isH ? 'Hasta las ' + hnTime(r.due_out_at) + ' (salida manual)' : 'Salida automática ' + hnDay(r.due_out_at) + ', ' + hnTime(r.due_out_at)}</p>
+      <p class="hint">Entró ${hnShort(r.check_in_at)} ${hnTime(r.check_in_at)} · ${isH ? 'Hasta las ' + hnTime(r.due_out_at) + ' (salida manual)' : 'Salida automática ' + hnDay(r.due_out_at) + ', ' + hnTime(r.due_out_at)}${r.pay ? ' · Pagó con ' + esc(r.pay) : ''}</p>
       ${r.pending_balance > 0 ? `<button class="btn" id="payNow">Debe ${fmt(r.pending_balance)} · Registrar pago</button>` : ''}
       ${extendForm(h, r, isH)}
       <div class="err" id="err"></div>
       <button class="btn" id="ext">${isH ? 'Cobrar y agregar' : 'Cobrar y extender'}</button>
+      <button class="btn ghost" id="edit">Editar fechas o forma de pago</button>
       <button class="btn warn" id="out">Registrar salida ahora</button>
       <div class="row"><button class="btn ghost" id="c">Cerrar</button></div>
       ${issueBtn}`, () => {
       bindExtend(h, r, isH, r.due_out_at, r.stay_id, isH ? 'Tiempo agregado' : 'Estadía extendida');
+      $('edit').onclick = () => editStaySheet(h, r);
       $('c').onclick = closeSheet;
       $('issue').onclick = () => issueSheet(h, r);
       if ($('payNow')) $('payNow').onclick = async () => {
@@ -904,6 +908,64 @@ function extendAgainSheet(h, r) {
     <div class="row"><button class="btn ghost" id="c">Cerrar</button></div>`, () => {
     $('c').onclick = closeSheet;
     bindExtend(h, r, false, ls.checked_out_at, ls.id, `${ls.guest} sigue en la ${r.number}`);
+  });
+}
+
+// ---- Editar una estadía en curso: fechas (calendario) y forma de pago ----
+const EDIT_PAY = (h) => [...(me.pay_now || ['Efectivo', 'Tarjeta', 'Transferencia', 'PayPal']), ...(h.allow_po ? ['Orden de compra'] : [])];
+function payPicker(h, current) {
+  const opts = EDIT_PAY(h);
+  return `<label>Forma de pago<select id="f-ep">${opts.map((m) => `<option ${m === current ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>
+    <label id="g-epo" ${current === 'Orden de compra' ? '' : 'hidden'}>Número de orden de compra<input id="f-epo" autocomplete="off"></label>`;
+}
+function bindPayPicker() {
+  $('f-ep').onchange = () => { $('g-epo').hidden = $('f-ep').value !== 'Orden de compra'; };
+}
+function editStaySheet(h, r) {
+  const isH = r.kind === 'hora';
+  const canPay = r.pay && EDIT_PAY(h).includes(r.pay);
+  const s0 = hnDate(r.check_in_at), e0 = hnDate(r.due_out_at);
+  const today = hnDate();
+  sheet(`<h3>Editar · Hab. ${esc(r.number)}</h3>
+    <p><b>${esc(r.guest)}</b></p>
+    ${isH ? '' : `<p class="hint">Toca el día de entrada y luego el de salida. Si cambian las noches, el cobro se ajusta solo.</p><div id="cale"></div><p class="hint" id="ecalc"></p>`}
+    ${canPay ? payPicker(h, r.pay) : r.pay === 'Pendiente' ? '<p class="hint">Pago pendiente: cuando pague, usa "Registrar pago" en la habitación.</p>' : ''}
+    <div class="err" id="err"></div>
+    <div class="row"><button class="btn ghost" id="c">Cancelar</button><button class="btn" id="ok">Guardar cambios</button></div>`, () => {
+    $('c').onclick = () => roomSheet(h, r);
+    if (canPay) bindPayPicker();
+    let st = s0, en = e0;
+    if (!isH) {
+      const old = Math.round((parseD(e0) - parseD(s0)) / 86400000);
+      const calc = () => {
+        const n = Math.round((parseD(en) - parseD(st)) / 86400000);
+        const d = n - old;
+        const money = r.rate && !r.credit ? ` · ${d > 0 ? 'se cobra' : 'se descuenta'} ${fmt(Math.abs(d) * r.rate)}` : '';
+        $('ecalc').innerHTML = `Entra <b>${hnShort(parseD(st))}</b> · sale <b>${hnDay(parseD(en))}, ${h.checkout_time}</b> · ${n} noche${n === 1 ? '' : 's'}${d ? ` (${d > 0 ? '+' : ''}${d}${money})` : ''}`;
+        if (en < today) $('ecalc').innerHTML += '<br><b>La salida no puede ser antes de hoy.</b>';
+      };
+      stayCalendar($('cale'), { start: s0, end: e0, mode: 'range', maxStart: today, maxNights: 366, onChange: (a, b) => { st = a; en = b; calc(); } });
+      calc();
+    }
+    $('ok').onclick = (e) => act(e.target, async () => {
+      const b = {};
+      if (!isH && (st !== s0 || en !== e0)) {
+        if (en < today) throw new Error('La salida no puede ser antes de hoy. Si ya se fue, registra la salida.');
+        Object.assign(b, { start: st, end: en });
+      }
+      if (canPay && $('f-ep').value !== r.pay) Object.assign(b, { pay: $('f-ep').value, po: $('f-epo').value });
+      if (!Object.keys(b).length) throw new Error('No cambiaste nada.');
+      await api('PATCH', `/api/stays/${r.stay_id}`, b);
+    }, 'Cambios guardados');
+  });
+}
+function repaySheet(h, saleId, current) {
+  sheet(`<h3>Cambiar forma de pago</h3><p class="hint">Queda registrado quién lo cambió.</p>
+    ${payPicker(h, current)}<div class="err" id="err"></div>
+    <div class="row"><button class="btn ghost" id="c">Cancelar</button><button class="btn" id="ok">Guardar</button></div>`, () => {
+    bindPayPicker();
+    $('c').onclick = closeSheet;
+    $('ok').onclick = (e) => act(e.target, () => api('PATCH', `/api/sales/${saleId}`, { pay: $('f-ep').value, po: $('f-epo').value }), 'Forma de pago cambiada');
   });
 }
 
@@ -1090,7 +1152,7 @@ async function viewContabilidad(h) {
   bindPending(h, pending);
   bindProofs();
   $('past').onclick = () => pastStaySheet(h);
-  bindVoid();
+  bindVoid(h);
   $('csv').onclick = () => {
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const rows = [['Hotel', 'Fecha', 'Hora', 'Concepto', 'Habitación', 'Noches', 'Horas', 'Forma de pago', 'Orden de compra', 'Monto', 'Registrado por', 'Estado', 'Motivo anulación']]

@@ -83,7 +83,8 @@ export async function listRooms(env, user, hotelId) {
             (SELECT COUNT(*) FROM issues i WHERE i.room_id = r.id AND i.status = 'abierta') AS open_issues,
             (SELECT c.started_at FROM cleanings c WHERE c.room_id = r.id AND c.finished_at IS NULL ORDER BY c.id DESC LIMIT 1) AS cleaning_started_at,
             (SELECT u.name FROM cleanings c JOIN users u ON u.id = c.started_by WHERE c.room_id = r.id AND c.finished_at IS NULL ORDER BY c.id DESC LIMIT 1) AS cleaning_by,
-            (SELECT COALESCE(SUM(x.amount - x.paid_amount), 0) FROM sales x WHERE x.stay_id = s.id AND x.pay = 'Pendiente' AND x.voided_at IS NULL AND x.settled_at IS NULL) AS pending_balance
+            (SELECT COALESCE(SUM(x.amount - x.paid_amount), 0) FROM sales x WHERE x.stay_id = s.id AND x.pay = 'Pendiente' AND x.voided_at IS NULL AND x.settled_at IS NULL) AS pending_balance,
+            (SELECT x.pay FROM sales x WHERE x.stay_id = s.id AND x.voided_at IS NULL AND x.kind IN ('hospedaje','hora') ORDER BY x.id DESC LIMIT 1) AS pay
        FROM rooms r LEFT JOIN stays s ON s.id = r.current_stay_id
       WHERE r.hotel_id = ? ORDER BY r.sort, r.number`,
   ).bind(hotelId).all();
@@ -104,7 +105,7 @@ export async function listRooms(env, user, hotelId) {
     if (o && !r.stay_id && r.status !== 'bloqueada') {
       r.last_stay = { id: o.id, guest: o.guest, checked_out_at: o.checked_out_at, credit: isCreditCompany(hotel, o.company) && !showCompany, rate: isCreditCompany(hotel, o.company) && !showCompany ? null : o.rate };
     }
-    if (!showGuest) { r.guest = r.guest ? 'Ocupada' : null; r.rate = null; r.pending_balance = 0; r.company = null; }
+    if (!showGuest) { r.guest = r.guest ? 'Ocupada' : null; r.rate = null; r.pay = null; r.pending_balance = 0; r.company = null; }
     else if (!showCompany && isCreditCompany(hotel, r.company)) { r.rate = null; r.pending_balance = 0; r.credit = true; }
     return r;
   });
@@ -443,6 +444,89 @@ export async function voidSale(env, user, saleId, b) {
   }
   await audit(env, user, 'anulacion', 'sale', s.id, { reason, amount: s.amount });
   return { ok: true };
+}
+
+/** Cambiar la forma de pago de un cobro ya registrado (p. ej. de Efectivo a PayPal). Los pendientes se cobran con "Registrar pago". */
+export async function changeSalePay(env, user, saleId, b, { skipAudit = false } = {}) {
+  const s = await env.DB.prepare('SELECT * FROM sales WHERE id = ?').bind(Number(saleId)).first();
+  if (!s) throw notFound();
+  if (s.voided_at) throw bad('Este movimiento está anulado.');
+  if (!can(user, s.hotel_id, 'contabilidad')) {
+    requireRole(user, s.hotel_id, 'recepcion');
+    const open = s.stay_id && (await env.DB.prepare('SELECT 1 FROM stays WHERE id = ? AND checked_out_at IS NULL').bind(s.stay_id).first());
+    if (s.local_date !== localDate(env) && !open) throw forbidden('Recepción solo puede cambiar cobros de hoy o de huéspedes que siguen hospedados.');
+  }
+  const editable = [...PAY_NOW, 'Orden de compra'];
+  if (!editable.includes(s.pay)) throw bad('Un pago pendiente se cobra con "Registrar pago", no se cambia aquí.');
+  const hotel = await getHotel(env, s.hotel_id);
+  const p = payInfo(hotel, b);
+  if (!editable.includes(p.pay)) throw bad('Elige Efectivo, Tarjeta, Transferencia, PayPal u Orden de compra.');
+  if (p.pay === s.pay && (p.po ?? null) === (s.po ?? null)) return { ok: true, changed: false };
+  await env.DB.prepare('UPDATE sales SET pay = ?, po = ? WHERE id = ?').bind(p.pay, p.po, s.id).run();
+  if (!skipAudit) await audit(env, user, 'cambio_pago', 'sale', s.id, { antes: s.pay, ahora: p.pay });
+  return { ok: true, changed: true };
+}
+
+/** Editar una estadía en curso: fechas de entrada y salida (las noches y el cobro se ajustan) y forma de pago. */
+export async function editStay(env, user, stayId, b) {
+  const st = await openStay(env, stayId);
+  requireRole(user, st.hotel_id, 'recepcion');
+  const hotel = await getHotel(env, st.hotel_id);
+  const out = { ok: true, delta_nights: 0, delta_amount: 0 };
+  if ((b.start || b.end) && st.kind === 'noche') {
+    const today = localDate(env);
+    const start = String(b.start || localDate(env, st.check_in_at));
+    const end = String(b.end || localDate(env, st.due_out_at));
+    if (!isDate(start) || !isDate(end)) throw bad('Fechas no válidas.');
+    if (start > today) throw bad('La entrada no puede ser en el futuro: el huésped ya está en la habitación.');
+    if (daysBetween(start, today) > 366) throw bad('La entrada es demasiado antigua.');
+    if (end <= start) throw bad('La salida debe ser después de la entrada.');
+    if (end < today) throw bad('La salida no puede ser antes de hoy. Si ya se fue, registra la salida.');
+    const nights = daysBetween(start, end);
+    if (nights > 366) throw bad('Máximo 366 noches.');
+    const inAt = localToUtc(env, start, localTime(env, st.check_in_at));
+    const due = localToUtc(env, end, hotel.checkout_time);
+    const clash = await env.DB.prepare(
+      'SELECT 1 FROM stays WHERE room_id = ? AND id <> ? AND check_in_at < ? AND COALESCE(checked_out_at, due_out_at) > ?',
+    ).bind(st.room_id, st.id, due, inAt).first();
+    if (clash) throw bad('Esas fechas chocan con otra estadía registrada en esta habitación.');
+    const { results: sales } = await env.DB.prepare(
+      "SELECT * FROM sales WHERE stay_id = ? AND kind = 'hospedaje' AND voided_at IS NULL ORDER BY id",
+    ).bind(st.id).all();
+    const delta = nights - st.nights;
+    if (delta && sales.length) {
+      const last = sales[sales.length - 1];
+      const ln = last.nights + delta;
+      if (ln < 1) throw bad('Para quitar tantas noches, anula primero la extensión en Contabilidad.');
+      const per = last.nights ? last.amount / last.nights : (st.rate || 0);
+      const amt = Math.round(ln * per * 100) / 100;
+      if (last.pay === 'Pendiente' && last.paid_amount > amt + 0.009) throw bad('Ya se pagaron más noches de las que quedarían. Revisa los pagos primero.');
+      const settled = last.pay === 'Pendiente' ? (last.paid_amount >= amt - 0.009 ? (last.settled_at || Date.now()) : null) : last.settled_at;
+      await env.DB.prepare('UPDATE sales SET nights = ?, amount = ?, settled_at = ? WHERE id = ?').bind(ln, amt, settled, last.id).run();
+      out.delta_amount = Math.round((amt - last.amount) * 100) / 100;
+    }
+    if (sales.length && start !== localDate(env, st.check_in_at)) {
+      await env.DB.prepare('UPDATE sales SET local_date = ?, ts = ? WHERE id = ?').bind(start, inAt, sales[0].id).run();
+    }
+    await env.DB.prepare('UPDATE stays SET check_in_at = ?, due_out_at = ?, nights = ?, notified_due = 0 WHERE id = ?')
+      .bind(inAt, due, nights, st.id).run();
+    out.delta_nights = delta;
+    out.due_out_at = due;
+    await audit(env, user, 'edicion_estadia', 'stay', st.id, {
+      antes: { entrada: localDate(env, st.check_in_at), salida: localDate(env, st.due_out_at), noches: st.nights },
+      ahora: { entrada: start, salida: end, noches: nights }, ajuste: out.delta_amount,
+    });
+  }
+  if (b.pay) {
+    const { results } = await env.DB.prepare(
+      `SELECT id, pay FROM sales WHERE stay_id = ? AND voided_at IS NULL AND kind IN ('hospedaje','hora') AND pay IN (${[...PAY_NOW, 'Orden de compra'].map(() => '?').join(',')})`,
+    ).bind(st.id, ...PAY_NOW, 'Orden de compra').all();
+    if (!results.length) throw bad('Esta estadía no tiene cobros con forma de pago para cambiar (si es pendiente, usa "Registrar pago").');
+    for (const x of results) await changeSalePay(env, user, x.id, b, { skipAudit: true });
+    await audit(env, user, 'cambio_pago', 'stay', st.id, { ahora: b.pay, cobros: results.length });
+    out.pay = b.pay;
+  }
+  return out;
 }
 
 // ---------------- Pagos pendientes ----------------

@@ -5,7 +5,7 @@ import {
   passkeyRegisterOptions, passkeyRegister, passkeyLoginOptions, passkeyLogin,
 } from './auth.js';
 import {
-  hotelConfig, pastStay, listRooms, checkIn, extendStay, checkOut, cleanStart, cleanFinish, reportIssue, listIssues, resolveIssue, issuePhoto,
+  hotelConfig, pastStay, listRooms, checkIn, extendStay, editStay, changeSalePay, checkOut, cleanStart, cleanFinish, reportIssue, listIssues, resolveIssue, issuePhoto,
   addExtraSale, listSales, voidSale, poUpdate, pendingPOs, listPending, payPending, saleProof, PAY_NOW, overview, financeReport, compareFinance, getHotel, audit, PAY,
 } from './ops.js';
 import { runScheduled } from './cron.js';
@@ -80,6 +80,8 @@ on('GET', '/api/finance/compare', async ({ env, user, url }) => json(await compa
 on('GET', '/api/hotels/:hotel/rooms', async ({ env, user, p }) => json(await listRooms(env, user, p.hotel)));
 on('POST', '/api/hotels/:hotel/checkin', async ({ req, env, user, p }) => json(await checkIn(env, user, p.hotel, await body(req))));
 on('POST', '/api/hotels/:hotel/past-stay', async ({ req, env, user, p }) => json(await pastStay(env, user, p.hotel, await body(req))));
+on('PATCH', '/api/stays/:id', async ({ req, env, user, p }) => json(await editStay(env, user, p.id, await body(req))));
+on('PATCH', '/api/sales/:id', async ({ req, env, user, p }) => json(await changeSalePay(env, user, p.id, await body(req))));
 on('POST', '/api/stays/:id/extend', async ({ req, env, user, p }) => json(await extendStay(env, user, p.id, await body(req))));
 on('POST', '/api/stays/:id/checkout', async ({ env, user, p }) => json(await checkOut(env, user, p.id, 'manual')));
 on('POST', '/api/rooms/:id/clean/start', async ({ env, user, p }) => json(await cleanStart(env, user, p.id)));
