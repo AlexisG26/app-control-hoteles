@@ -212,16 +212,27 @@ function payFields(h) {
   const pays = me.pay.filter((p) => p !== 'Orden de compra' || h.allow_po);
   return `<label>Forma de pago<select id="f-pay">${pays.map((p) => `<option>${p}</option>`).join('')}</select></label>
     <label id="poL" hidden>Número de orden de compra<input id="f-po" autocomplete="off" placeholder="Ej. OC-2026-0153"></label>
-    <p class="note" id="pendL" hidden>Queda como <b>pago pendiente</b>. No suma a la caja hasta que se cobre en <b>Pagos pendientes</b>, con su comprobante.</p>`;
+    <p class="note" id="pendL" hidden>Queda como <b>pago pendiente</b>. No suma a la caja hasta que se cobre en <b>Pagos pendientes</b>, con su comprobante.</p>
+    <label id="usdL" hidden>Total cobrado en dólares (US$)<input id="f-usd" type="number" min="0" step="any" inputmode="decimal" placeholder="Ej. 120"></label>
+    <p class="note" id="usdN" hidden>Se pasa a lempiras con la <b>tasa del día siguiente</b>, que es cuando cae el dinero de PayPal. Contabilidad puede ajustar lo que realmente cayó.</p>`;
 }
 function bindPay() {
   const s = $('f-pay');
   s?.addEventListener('change', () => {
     $('poL').hidden = s.value !== 'Orden de compra'; if (!$('poL').hidden) $('f-po').focus();
     if ($('pendL')) $('pendL').hidden = s.value !== 'Pendiente';
+    if ($('usdL')) { $('usdL').hidden = $('usdN').hidden = s.value !== 'PayPal'; if (s.value === 'PayPal') $('f-usd').focus(); }
   });
 }
-const payBody = () => ({ pay: $('f-pay').value, po: $('f-po')?.value.trim() || undefined });
+const payBody = () => {
+  const pay = $('f-pay').value;
+  const b = { pay, po: $('f-po')?.value.trim() || undefined };
+  if (pay === 'PayPal' && $('f-usd')) {
+    if (!(+$('f-usd').value > 0)) throw new Error('Escribe cuántos dólares pagó por PayPal.');
+    b.usd = +$('f-usd').value;
+  }
+  return b;
+};
 
 // ================= INICIO DE SESIÓN =================
 function viewLogin() {
@@ -623,12 +634,13 @@ function paySheet(h, p) {
   });
 }
 
+const usdFmt = (v) => Number(v || 0).toLocaleString('es-HN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function saleRow(s, canVoid) {
   const v = !!s.voided_at;
   const pend = s.pay === 'Pendiente';
   const tag = pend ? (s.settled_at ? ' <span class="tag t-ok">Pagado</span>' : ' <span class="tag t-warn">Pendiente</span>') : '';
   const acts = [s.proof_key ? `<button class="mini" data-proof="${s.id}">Comprobante</button>` : '', canVoid && !v && ['Efectivo', 'Tarjeta', 'Transferencia', 'PayPal', 'Orden de compra'].includes(s.pay) ? `<button class="mini" data-repay="${s.id}" data-cur="${esc(s.pay)}">Cambiar pago</button>` : '', canVoid && !v ? `<button class="mini" data-void="${s.id}">Anular</button>` : ''].join('');
-  return `<li class="${v ? 'void' : ''} ${pend ? 'is-pend' : ''}"><div class="d">${esc(s.concept)}${tag}<small>${hnTime(s.ts)} · ${esc(s.pay)}${s.po ? ' #' + esc(s.po) : ''}${s.kind === 'abono' && s.paid_nights ? ` · ${s.paid_nights} noche${s.paid_nights > 1 ? 's' : ''}` : ''} · ${esc(s.by_name || '—')}${v ? ` · anulado por ${esc(s.voided_by_name || '')}: ${esc(s.void_reason || '')}` : ''}</small></div>
+  return `<li class="${v ? 'void' : ''} ${pend ? 'is-pend' : ''}"><div class="d">${esc(s.concept)}${tag}<small>${hnTime(s.ts)} · ${esc(s.pay)}${s.usd_amount != null ? ` US$ ${usdFmt(s.usd_amount)} × ${s.fx_rate}${s.fx_status === 0 ? ' (estimada)' : ''}` : ''}${s.po ? ' #' + esc(s.po) : ''}${s.kind === 'abono' && s.paid_nights ? ` · ${s.paid_nights} noche${s.paid_nights > 1 ? 's' : ''}` : ''} · ${esc(s.by_name || '—')}${v ? ` · anulado por ${esc(s.voided_by_name || '')}: ${esc(s.void_reason || '')}` : ''}</small></div>
     <span class="m">${fmt(s.amount)}</span><span class="acts">${acts}</span></li>`;
 }
 function bindVoid(h) {
@@ -916,10 +928,24 @@ const EDIT_PAY = (h) => [...(me.pay_now || ['Efectivo', 'Tarjeta', 'Transferenci
 function payPicker(h, current) {
   const opts = EDIT_PAY(h);
   return `<label>Forma de pago<select id="f-ep">${opts.map((m) => `<option ${m === current ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>
-    <label id="g-epo" ${current === 'Orden de compra' ? '' : 'hidden'}>Número de orden de compra<input id="f-epo" autocomplete="off"></label>`;
+    <label id="g-epo" ${current === 'Orden de compra' ? '' : 'hidden'}>Número de orden de compra<input id="f-epo" autocomplete="off"></label>
+    <label id="g-eusd" ${current === 'PayPal' ? '' : 'hidden'}>Total cobrado en dólares (US$)<input id="f-eusd" type="number" min="0" step="any" inputmode="decimal" placeholder="Ej. 120"></label>
+    <p class="note" id="n-eusd" ${current === 'PayPal' ? '' : 'hidden'}>Los lempiras salen de la tasa del día siguiente a la reserva.</p>`;
 }
 function bindPayPicker() {
-  $('f-ep').onchange = () => { $('g-epo').hidden = $('f-ep').value !== 'Orden de compra'; };
+  $('f-ep').onchange = () => {
+    $('g-epo').hidden = $('f-ep').value !== 'Orden de compra';
+    $('g-eusd').hidden = $('n-eusd').hidden = $('f-ep').value !== 'PayPal';
+  };
+}
+function pickerBody(current) {
+  const pay = $('f-ep').value;
+  const b = { pay, po: $('f-epo').value };
+  if (pay === 'PayPal') {
+    if (+$('f-eusd').value > 0) b.usd = +$('f-eusd').value;
+    else if (current !== 'PayPal') throw new Error('Escribe cuántos dólares pagó por PayPal.');
+  }
+  return b;
 }
 function editStaySheet(h, r) {
   const isH = r.kind === 'hora';
@@ -953,7 +979,7 @@ function editStaySheet(h, r) {
         if (en < today) throw new Error('La salida no puede ser antes de hoy. Si ya se fue, registra la salida.');
         Object.assign(b, { start: st, end: en });
       }
-      if (canPay && $('f-ep').value !== r.pay) Object.assign(b, { pay: $('f-ep').value, po: $('f-epo').value });
+      if (canPay && ($('f-ep').value !== r.pay || +$('f-eusd').value > 0)) Object.assign(b, pickerBody(r.pay));
       if (!Object.keys(b).length) throw new Error('No cambiaste nada.');
       await api('PATCH', `/api/stays/${r.stay_id}`, b);
     }, 'Cambios guardados');
@@ -965,7 +991,48 @@ function repaySheet(h, saleId, current) {
     <div class="row"><button class="btn ghost" id="c">Cancelar</button><button class="btn" id="ok">Guardar</button></div>`, () => {
     bindPayPicker();
     $('c').onclick = closeSheet;
-    $('ok').onclick = (e) => act(e.target, () => api('PATCH', `/api/sales/${saleId}`, { pay: $('f-ep').value, po: $('f-epo').value }), 'Forma de pago cambiada');
+    $('ok').onclick = (e) => act(e.target, () => api('PATCH', `/api/sales/${saleId}`, pickerBody(current)), 'Forma de pago cambiada');
+  });
+}
+
+// ---- PayPal en dólares (Contabilidad) ----
+const FX_STATUS = { 0: ['t-warn', 'Estimada'], 1: ['t-info', 'Tasa día siguiente'], 2: ['t-ok', 'Lo que cayó'] };
+function paypalPanel(pp) {
+  if (!pp || !pp.items.length) return '';
+  return `<section class="panel"><div class="sec-head"><h2>PayPal</h2><b style="font-family:var(--display);font-size:20px">US$ ${usdFmt(pp.usd)}</b></div>
+    <p class="hint" style="margin-top:-6px">En lempiras: <b>${fmt(pp.lempiras)}</b>${pp.rate_now ? ` · Tasa más reciente: L ${pp.rate_now.rate} (${hnShort(parseD(pp.rate_now.date))})` : ''}.
+    Cada reserva se pasa a lempiras con la tasa del día siguiente. Si cayó otro monto, toca <b>Ajustar</b>.</p>
+    ${pp.estimated ? `<div class="alerts"><span class="tag t-warn">${pp.estimated} con tasa estimada: se actualiza sola mañana</span></div>` : ''}
+    ${pp.without_usd ? `<div class="alerts"><span class="tag t-bad">${pp.without_usd} sin monto en dólares</span></div>` : ''}
+    <ul class="list">${pp.items.map((x) => {
+      const st = x.usd_amount == null ? ['t-bad', 'Falta US$'] : FX_STATUS[x.fx_status];
+      return `<li><div class="d">${esc(x.concept)} <span class="tag ${st[0]}">${st[1]}</span><small>${hnShort(parseD(x.local_date))}${x.usd_amount != null ? ` · US$ ${usdFmt(x.usd_amount)} × ${x.fx_rate} (tasa del ${hnShort(parseD(x.fx_date))})` : ''}</small></div>
+        <span class="m">${fmt(x.amount)}</span><span class="acts"><button class="mini" data-pp="${x.id}">Ajustar</button></span></li>`;
+    }).join('')}</ul></section>`;
+}
+function bindPaypal(pp) {
+  app.querySelectorAll('[data-pp]').forEach((b) => {
+    b.onclick = () => {
+      const x = pp.items.find((i) => i.id === +b.dataset.pp);
+      sheet(`<h3>PayPal · ${esc(x.concept)}</h3>
+        <p class="hint">Reserva del ${hnShort(parseD(x.local_date))}. El dinero cae con la tasa del ${hnShort(parseD(addDays(x.local_date, 1)))}.</p>
+        <label>Monto en dólares (US$)<input id="f-u" type="number" min="0" step="any" inputmode="decimal" value="${x.usd_amount ?? ''}"></label>
+        <label>Lempiras que cayeron (opcional)<input id="f-l" type="number" min="0" step="any" inputmode="decimal" placeholder="Déjalo vacío para usar la tasa del día siguiente"></label>
+        <p class="hint" id="f-calc"></p>
+        <div class="err" id="err"></div>
+        <div class="row"><button class="btn ghost" id="c">Cancelar</button><button class="btn" id="ok">Guardar</button></div>`, () => {
+        const calc = () => {
+          const u = +$('f-u').value || 0, l = +$('f-l').value || 0;
+          $('f-calc').textContent = u && l ? `Tasa real: L ${(l / u).toFixed(4)} por dólar` : u && x.fx_rate ? `Con la tasa ${x.fx_rate}: ${fmt(u * x.fx_rate)}` : '';
+        };
+        $('f-u').oninput = $('f-l').oninput = calc; calc();
+        $('c').onclick = closeSheet;
+        $('ok').onclick = (e) => act(e.target, () => {
+          if (!(+$('f-u').value > 0)) throw new Error('Escribe el monto en dólares.');
+          return api('POST', `/api/sales/${x.id}/usd`, { usd: +$('f-u').value, lempiras: $('f-l').value || undefined });
+        }, 'PayPal actualizado');
+      });
+    };
   });
 }
 
@@ -1116,6 +1183,7 @@ async function viewContabilidad(h) {
         <div><span>ISV ${fin.taxes.isv_pct}%</span><b>${fmt2(fin.taxes.isv)}</b></div>
         <div><span>Turismo ${fin.taxes.tourism_pct}%</span><b>${fmt2(fin.taxes.tourism)}</b></div></div>
     </section>` : ''}
+    ${paypalPanel(fin.paypal)}
     ${fin.by_company.length ? `<section class="panel"><h2>Por empresa</h2><ul class="list">${fin.by_company.map((c) => `<li><div class="d">${esc(c.k)}<small>${c.nights} noche${c.nights === 1 ? '' : 's'} · ${c.n} registro${c.n > 1 ? 's' : ''}</small></div><span class="m">${fmt(c.t)}</span><span></span></li>`).join('')}</ul></section>` : ''}
     ${pendingPanel(pending)}
     ${h.allow_po ? `<section class="panel">
@@ -1153,6 +1221,7 @@ async function viewContabilidad(h) {
   bindProofs();
   $('past').onclick = () => pastStaySheet(h);
   bindVoid(h);
+  bindPaypal(fin.paypal);
   $('csv').onclick = () => {
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const rows = [['Hotel', 'Fecha', 'Hora', 'Concepto', 'Habitación', 'Noches', 'Horas', 'Forma de pago', 'Orden de compra', 'Monto', 'Registrado por', 'Estado', 'Motivo anulación']]
@@ -1405,8 +1474,9 @@ async function pastStaySheet(h, last = {}) {
     $('c').onclick = closeSheet;
     const save = async (btn, more) => {
       $('err').textContent = ''; btn.disabled = true;
-      const body = { date: $('p-d').value, room_id: +$('p-r').value, guest: $('p-g').value, company: $('p-co').value.trim() || undefined, room_type: roomType || undefined, nights: +$('p-n').value, rate: +$('p-p').value, ...payBody() };
+      const body = { date: $('p-d').value, room_id: +$('p-r').value, guest: $('p-g').value, company: $('p-co').value.trim() || undefined, room_type: roomType || undefined, nights: +$('p-n').value, rate: +$('p-p').value };
       try {
+        Object.assign(body, payBody());
         if (!body.date) throw new Error('Elige la fecha de entrada.');
         if (!(body.rate > 0)) throw new Error('Escribe el precio por noche.');
         const r = await api('POST', `/api/hotels/${h.id}/past-stay`, body);

@@ -13,6 +13,7 @@ const pushCalls = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, init) => {
   if (String(url).startsWith('https://push.example')) { pushCalls.push({ url, init }); return new Response(null, { status: 201 }); }
+  if (String(url).startsWith('https://open.er-api.com/')) return Response.json({ result: 'success', rates: { HNL: 26 } });
   return realFetch(url, init);
 };
 
@@ -565,6 +566,47 @@ test('quitar noches a una estadía con extensión: se ajusta sola sin ir a Conta
   const { results } = await env.DB.prepare('SELECT nights, amount, voided_at FROM sales WHERE stay_id = ? ORDER BY id').bind(r.data.stay_id).all();
   assert.equal(results[0].nights, 1); assert.equal(results[0].amount, 1000); assert.equal(results[0].voided_at, null);
   assert.ok(results[1].voided_at);
+});
+
+test('PayPal en dólares: tasa del día siguiente, estimada mientras tanto y lo que cayó', async () => {
+  const today = localDate(env);
+  const room = await roomId('prokinto', '2C');
+  const rr = (await api('GET', '/api/hotels/prokinto/rooms', { token: owner })).data.find((z) => z.id === room);
+  if (rr.stay_id) await api('POST', `/api/stays/${rr.stay_id}/checkout`, { token: owner });
+  await env.DB.prepare("UPDATE rooms SET status = 'libre' WHERE id = ?").bind(room).run();
+  const r = await api('POST', '/api/hotels/prokinto/checkin', { token: owner, body: { room_id: room, guest: 'Turista USA', kind: 'noche', nights: 2, rate: 1300, pay: 'PayPal', usd: 100 } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  let sale = await env.DB.prepare('SELECT * FROM sales WHERE stay_id = ?').bind(r.data.stay_id).first();
+  assert.equal(sale.usd_amount, 100);
+  assert.equal(sale.fx_date, addDays(today, 1));
+  assert.equal(sale.fx_status, 0); // estimada con la tasa de hoy
+  assert.equal(sale.amount, 2600);
+  // Llega la tasa del día siguiente: se recalcula
+  await env.DB.prepare("INSERT INTO fx_rates (date, rate, source, updated_at) VALUES (?, 25.5, 'prueba', 0)").bind(addDays(today, 1)).run();
+  await runScheduled(env, Date.now());
+  sale = await env.DB.prepare('SELECT * FROM sales WHERE id = ?').bind(sale.id).first();
+  assert.equal(sale.fx_status, 1); assert.equal(sale.amount, 2550); assert.equal(sale.fx_rate, 25.5);
+  // Contabilidad pone lo que realmente cayó
+  const c = await api('POST', `/api/sales/${sale.id}/usd`, { token: conta, body: { lempiras: 2490 } });
+  assert.equal(c.status, 200, JSON.stringify(c.data));
+  sale = await env.DB.prepare('SELECT * FROM sales WHERE id = ?').bind(sale.id).first();
+  assert.equal(sale.fx_status, 2); assert.equal(sale.amount, 2490); assert.equal(sale.fx_rate, 24.9);
+  // Una tasa manual nueva no pisa lo que cayó
+  await api('POST', '/api/fx', { token: conta, body: { date: addDays(today, 1), rate: 27 } });
+  assert.equal((await env.DB.prepare('SELECT amount FROM sales WHERE id = ?').bind(sale.id).first()).amount, 2490);
+  const fin = (await api('GET', `/api/hotels/prokinto/finance?from=${today}&to=${today}`, { token: conta })).data;
+  assert.equal(fin.paypal.usd, 100);
+  assert.ok(fin.paypal.lempiras >= 2490);
+  // Cambiar un cobro en efectivo a PayPal con dólares (la reserva que ya pasó)
+  const x = await api('POST', `/api/stays/${r.data.stay_id}/extend`, { token: owner, body: { nights: 1, rate: 1300, pay: 'Efectivo' } });
+  const ext = await env.DB.prepare("SELECT * FROM sales WHERE stay_id = ? AND pay = 'Efectivo'").bind(r.data.stay_id).first();
+  const ch = await api('PATCH', `/api/sales/${ext.id}`, { token: owner, body: { pay: 'PayPal', usd: 50 } });
+  assert.equal(ch.status, 200, JSON.stringify(ch.data));
+  const e2 = await env.DB.prepare('SELECT * FROM sales WHERE id = ?').bind(ext.id).first();
+  assert.equal(e2.usd_amount, 50); assert.equal(e2.amount, 1350); // tasa manual 27 del día siguiente
+  // Y de vuelta a efectivo: se quitan los dólares
+  await api('PATCH', `/api/sales/${ext.id}`, { token: owner, body: { pay: 'Efectivo' } });
+  assert.equal((await env.DB.prepare('SELECT usd_amount FROM sales WHERE id = ?').bind(ext.id).first()).usd_amount, null);
 });
 
 test('desactivar un usuario cierra sus sesiones', async () => {

@@ -2,12 +2,12 @@
 // 1. Salida automática de estadías por noche a la hora de salida del hotel → aviso a limpieza.
 // 2. Aviso a recepción cuando vence el tiempo de una habitación por hora (la salida sigue siendo manual).
 // 3. Una vez al día (8:00 a. m.): recordatorios de órdenes de compra a los 15 y 30 días.
-import { checkOut, pendingPOs } from './ops.js';
+import { checkOut, pendingPOs, fetchFxRate, settleFx } from './ops.js';
 import { notify, usersWithRole } from './notify.js';
-import { localTime } from './util.js';
+import { localTime, localDate } from './util.js';
 
 export async function runScheduled(env, now = Date.now()) {
-  const out = { auto_checkouts: 0, hourly_alerts: 0, po_reminders: 0 };
+  const out = { auto_checkouts: 0, hourly_alerts: 0, po_reminders: 0, fx_settled: 0 };
 
   // 1. Salidas automáticas
   const { results: due } = await env.DB.prepare(
@@ -31,6 +31,15 @@ export async function runScheduled(env, now = Date.now()) {
     });
     out.hourly_alerts++;
   }
+
+  // 4. Tasa del dólar del día (desde las 6:00, una vez) y recálculo de ventas PayPal estimadas
+  try {
+    if (localTime(env, now) >= '06:00') {
+      const has = await env.DB.prepare('SELECT 1 FROM fx_rates WHERE date = ?').bind(localDate(env, now)).first();
+      if (!has && env.FX_AUTO !== '0') await fetchFxRate(env, localDate(env, now));
+    }
+    out.fx_settled = await settleFx(env);
+  } catch (e) { console.error('fx', e); }
 
   // 3. Órdenes de compra (una vez al día, entre 8:00 y 8:04 hora local)
   const t = localTime(env, now);

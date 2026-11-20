@@ -59,7 +59,96 @@ function payInfo(hotel, b) {
     if (!po) throw bad('Escribe el número de orden de compra.');
     return { pay, po };
   }
-  return { pay, po: null };
+  const usd = pay === 'PayPal' && b.usd != null && b.usd !== '' ? money(b.usd) : null;
+  if (usd != null && !(usd > 0)) throw bad('Escribe el monto en dólares.');
+  return { pay, po: null, usd };
+}
+
+// ---------------- Dólares (PayPal) ----------------
+
+/** Tasa US$ → L del día (open.er-api.com, gratis y sin llave). Se guarda en fx_rates. */
+export async function fetchFxRate(env, date = localDate(env)) {
+  const res = await fetch('https://open.er-api.com/v6/latest/USD', { cf: { cacheTtl: 3600 } });
+  if (!res.ok) throw new Error('tasa ' + res.status);
+  const rate = Number((await res.json())?.rates?.HNL);
+  if (!(rate > 1)) throw new Error('tasa inválida');
+  await env.DB.prepare(
+    "INSERT INTO fx_rates (date, rate, source, updated_at) VALUES (?,?,?,?) ON CONFLICT(date) DO UPDATE SET rate = excluded.rate, source = excluded.source, updated_at = excluded.updated_at WHERE fx_rates.source <> 'manual'",
+  ).bind(date, Math.round(rate * 10000) / 10000, 'open.er-api.com', Date.now()).run();
+  return rate;
+}
+
+/** Tasa para una venta del día `date`: la del día siguiente; si aún no existe, la más reciente (estimada). */
+export async function fxFor(env, date) {
+  const fxDate = addDays(date, 1);
+  const exact = await env.DB.prepare('SELECT rate FROM fx_rates WHERE date = ?').bind(fxDate).first();
+  if (exact) return { rate: exact.rate, fx_date: fxDate, status: 1 };
+  let last = await env.DB.prepare('SELECT rate FROM fx_rates ORDER BY date DESC LIMIT 1').first();
+  if (!last) {
+    try { await fetchFxRate(env); } catch (e) { console.error('fx', e); }
+    last = await env.DB.prepare('SELECT rate FROM fx_rates ORDER BY date DESC LIMIT 1').first();
+  }
+  if (!last) throw bad('No pude obtener la tasa del dólar. Intenta de nuevo en un momento.');
+  return { rate: last.rate, fx_date: fxDate, status: 0 };
+}
+
+/** Pone una venta en dólares: guarda los US$ y calcula los lempiras. */
+async function applyUsd(env, saleId, localDay, usd) {
+  const fx = await fxFor(env, localDay);
+  await env.DB.prepare('UPDATE sales SET usd_amount = ?, fx_rate = ?, fx_date = ?, fx_status = ?, amount = ? WHERE id = ?')
+    .bind(usd, fx.rate, fx.fx_date, fx.status, Math.round(usd * fx.rate * 100) / 100, saleId).run();
+}
+
+/** Cuando ya existe la tasa del día siguiente, las ventas estimadas se recalculan (lo hace la tarea automática). */
+export async function settleFx(env) {
+  const r = await env.DB.prepare(
+    `UPDATE sales SET fx_rate = (SELECT f.rate FROM fx_rates f WHERE f.date = sales.fx_date),
+            amount = ROUND(usd_amount * (SELECT f.rate FROM fx_rates f WHERE f.date = sales.fx_date), 2), fx_status = 1
+      WHERE usd_amount IS NOT NULL AND fx_status = 0 AND voided_at IS NULL AND kind <> 'abono'
+        AND EXISTS (SELECT 1 FROM fx_rates f WHERE f.date = sales.fx_date)`,
+  ).run();
+  return r.meta?.changes ?? 0;
+}
+
+/** Contabilidad: tasa manual para una fecha (recalcula lo que no se haya ajustado a mano). */
+export async function setFxRate(env, user, b) {
+  if (!user.is_owner && !user.memberships.some((m) => m.role === 'contabilidad' || m.role === 'admin')) throw forbidden();
+  const date = String(b.date || '');
+  const rate = money(b.rate);
+  if (!isDate(date) || !(rate > 1)) throw bad('Escribe la fecha y la tasa (lempiras por dólar).');
+  await env.DB.prepare(
+    "INSERT INTO fx_rates (date, rate, source, updated_at) VALUES (?,?,'manual',?) ON CONFLICT(date) DO UPDATE SET rate = excluded.rate, source = 'manual', updated_at = excluded.updated_at",
+  ).bind(date, rate, Date.now()).run();
+  await env.DB.prepare(
+    "UPDATE sales SET fx_rate = ?, amount = ROUND(usd_amount * ?, 2), fx_status = 1 WHERE usd_amount IS NOT NULL AND fx_date = ? AND fx_status < 2 AND voided_at IS NULL AND kind <> 'abono'",
+  ).bind(rate, rate, date).run();
+  await audit(env, user, 'tasa_dolar', 'fx', date, { rate });
+  return { ok: true };
+}
+
+export async function latestFx(env) {
+  return env.DB.prepare('SELECT date, rate, source FROM fx_rates ORDER BY date DESC LIMIT 1').first();
+}
+
+/** Contabilidad: dólares de una venta PayPal y/o los lempiras que realmente cayeron. */
+export async function setSaleUsd(env, user, saleId, b) {
+  const s = await env.DB.prepare('SELECT * FROM sales WHERE id = ?').bind(Number(saleId)).first();
+  if (!s || s.voided_at) throw notFound();
+  requireRole(user, s.hotel_id, 'contabilidad');
+  if (s.pay !== 'PayPal') throw bad('Solo para cobros por PayPal.');
+  if (s.kind === 'abono') throw bad('Los pagos de cuentas pendientes se registran en lempiras.');
+  const usd = b.usd != null && b.usd !== '' ? money(b.usd) : s.usd_amount;
+  if (!(usd > 0)) throw bad('Escribe el monto en dólares.');
+  if (b.lempiras != null && b.lempiras !== '') {
+    const l = money(b.lempiras);
+    if (!(l > 0)) throw bad('Escribe los lempiras que cayeron.');
+    await env.DB.prepare('UPDATE sales SET usd_amount = ?, amount = ?, fx_rate = ?, fx_date = COALESCE(fx_date, ?), fx_status = 2 WHERE id = ?')
+      .bind(usd, l, Math.round((l / usd) * 10000) / 10000, addDays(s.local_date, 1), s.id).run();
+  } else {
+    await applyUsd(env, s.id, s.local_date, usd);
+  }
+  await audit(env, user, 'paypal_dolares', 'sale', s.id, { usd, lempiras: b.lempiras ?? null, antes: s.amount });
+  return { ok: true };
 }
 
 async function addSale(env, user, hotel, s) {
@@ -69,7 +158,10 @@ async function addSale(env, user, hotel, s) {
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).bind(hotel.id, s.local_date ?? localDate(env, now), now, s.concept, s.room ?? null, s.stay_id ?? null, s.kind,
     s.nights || 0, s.hours || 0, s.amount, s.pay, s.po ?? null, user.id, s.parent_id ?? null, s.proof_key ?? null, s.paid_nights || 0, s.room_type ?? null, s.company ?? null).run();
-  return r.meta.last_row_id;
+  const id = r.meta.last_row_id;
+  // PayPal en dólares: los lempiras salen de la tasa del día siguiente (los pagos de pendientes se quedan en lempiras)
+  if (s.pay === 'PayPal' && s.usd > 0 && s.kind !== 'abono') await applyUsd(env, id, s.local_date ?? localDate(env, now), s.usd);
+  return id;
 }
 
 // ---------------- Habitaciones ----------------
@@ -461,8 +553,14 @@ export async function changeSalePay(env, user, saleId, b, { skipAudit = false } 
   const hotel = await getHotel(env, s.hotel_id);
   const p = payInfo(hotel, b);
   if (!editable.includes(p.pay)) throw bad('Elige Efectivo, Tarjeta, Transferencia, PayPal u Orden de compra.');
-  if (p.pay === s.pay && (p.po ?? null) === (s.po ?? null)) return { ok: true, changed: false };
+  const usdChange = p.pay === 'PayPal' && p.usd > 0 && p.usd !== s.usd_amount && s.kind !== 'abono';
+  if (p.pay === s.pay && (p.po ?? null) === (s.po ?? null) && !usdChange) return { ok: true, changed: false };
   await env.DB.prepare('UPDATE sales SET pay = ?, po = ? WHERE id = ?').bind(p.pay, p.po, s.id).run();
+  if (p.pay !== 'PayPal' && s.usd_amount != null) {
+    // Ya no es PayPal: se queda el monto en lempiras y se quitan los dólares
+    await env.DB.prepare('UPDATE sales SET usd_amount = NULL, fx_rate = NULL, fx_date = NULL, fx_status = 0 WHERE id = ?').bind(s.id).run();
+  }
+  if (usdChange) await applyUsd(env, s.id, s.local_date, p.usd);
   if (!skipAudit) await audit(env, user, 'cambio_pago', 'sale', s.id, { antes: s.pay, ahora: p.pay });
   return { ok: true, changed: true };
 }
@@ -473,7 +571,8 @@ async function resizeSale(env, x, n, fallbackRate) {
   const amt = Math.round(n * per * 100) / 100;
   if (x.pay === 'Pendiente' && x.paid_amount > amt + 0.009) throw bad('Ya se pagaron más noches de las que quedarían. Revisa los pagos primero.');
   const settled = x.pay === 'Pendiente' ? (x.paid_amount >= amt - 0.009 ? (x.settled_at || Date.now()) : null) : x.settled_at;
-  await env.DB.prepare('UPDATE sales SET nights = ?, amount = ?, settled_at = ? WHERE id = ?').bind(n, amt, settled, x.id).run();
+  const usd = x.usd_amount != null && x.nights ? Math.round((x.usd_amount / x.nights) * n * 100) / 100 : x.usd_amount;
+  await env.DB.prepare('UPDATE sales SET nights = ?, amount = ?, settled_at = ?, usd_amount = ? WHERE id = ?').bind(n, amt, settled, usd, x.id).run();
   return amt - x.amount;
 }
 
@@ -543,10 +642,15 @@ export async function editStay(env, user, stayId, b) {
   }
   if (b.pay) {
     const { results } = await env.DB.prepare(
-      `SELECT id, pay FROM sales WHERE stay_id = ? AND voided_at IS NULL AND kind IN ('hospedaje','hora') AND pay IN (${[...PAY_NOW, 'Orden de compra'].map(() => '?').join(',')})`,
+      `SELECT id, pay, amount FROM sales WHERE stay_id = ? AND voided_at IS NULL AND kind IN ('hospedaje','hora') AND pay IN (${[...PAY_NOW, 'Orden de compra'].map(() => '?').join(',')})`,
     ).bind(st.id, ...PAY_NOW, 'Orden de compra').all();
     if (!results.length) throw bad('Esta estadía no tiene cobros con forma de pago para cambiar (si es pendiente, usa "Registrar pago").');
-    for (const x of results) await changeSalePay(env, user, x.id, b, { skipAudit: true });
+    // Los dólares (si se escriben) son el total de la estadía: se reparten según el monto de cada cobro
+    const totalL = results.reduce((a, x) => a + (x.amount || 0), 0);
+    for (const x of results) {
+      const part = b.usd && results.length > 1 && totalL ? Math.round((money(b.usd) * (x.amount / totalL)) * 100) / 100 : b.usd;
+      await changeSalePay(env, user, x.id, { ...b, usd: part }, { skipAudit: true });
+    }
     await audit(env, user, 'cambio_pago', 'stay', st.id, { ahora: b.pay, cobros: results.length });
     out.pay = b.pay;
   }
@@ -764,6 +868,22 @@ export async function financeReport(env, user, hotelId, from, to) {
     avg_night_sold: lodgingSold[0].nights ? lodgingSold[0].t / lodgingSold[0].nights : 0,
     pending_created: pendingNew[0], pending_balance: pendingNow.t, pending_count: pendingNow.n,
     taxes, by_company: byCompany,
+    paypal: await paypalReport(env, hotelId, from, to),
+  };
+}
+
+async function paypalReport(env, hotelId, from, to) {
+  const { results: items } = await env.DB.prepare(
+    `SELECT id, local_date, concept, room, usd_amount, fx_rate, fx_date, fx_status, amount FROM sales
+      WHERE hotel_id = ? AND pay = 'PayPal' AND voided_at IS NULL AND kind <> 'abono' AND local_date BETWEEN ? AND ? ORDER BY local_date, id`,
+  ).bind(hotelId, from, to).all();
+  const r2 = (v) => Math.round(v * 100) / 100;
+  return {
+    usd: r2(items.reduce((a, x) => a + (x.usd_amount || 0), 0)),
+    lempiras: r2(items.reduce((a, x) => a + x.amount, 0)),
+    without_usd: items.filter((x) => x.usd_amount == null).length,
+    estimated: items.filter((x) => x.usd_amount != null && x.fx_status === 0).length,
+    items, rate_now: await latestFx(env),
   };
 }
 
