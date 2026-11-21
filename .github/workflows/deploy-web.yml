@@ -37,7 +37,7 @@ jobs:
           sed -i "s/const VERSION = 'v1';/const VERSION = '${GITHUB_SHA::8}';/" web/sw.js
 
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: web
       - id: deployment
