@@ -634,6 +634,23 @@ test('hotel sin control de limpieza (Prado): al salir queda libre, sin aviso ni 
   }
 });
 
+test('cancelar una reserva en ProKinto: anula cobros y deja la habitación libre', async () => {
+  const room = await roomId('prokinto', '505');
+  const r = await api('POST', '/api/hotels/prokinto/checkin', { token: owner, body: { room_id: room, guest: 'Cancela', kind: 'noche', nights: 2, rate: 700, pay: 'Efectivo' } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  await api('POST', `/api/stays/${r.data.stay_id}/extend`, { token: owner, body: { nights: 1, rate: 700, pay: 'Pendiente' } });
+  assert.equal((await api('POST', `/api/stays/${r.data.stay_id}/cancel`, { token: owner, body: {} })).status, 400);
+  const c = await api('POST', `/api/stays/${r.data.stay_id}/cancel`, { token: owner, body: { reason: 'El cliente canceló' } });
+  assert.equal(c.status, 200, JSON.stringify(c.data));
+  assert.equal(c.data.refunded, 1400);
+  const rm = (await api('GET', '/api/hotels/prokinto/rooms', { token: owner })).data.find((z) => z.id === room);
+  assert.equal(rm.status, 'libre');
+  assert.ok(!rm.last_stay);
+  const live = await env.DB.prepare('SELECT COUNT(*) n FROM sales WHERE stay_id = ? AND voided_at IS NULL').bind(r.data.stay_id).first();
+  assert.equal(live.n, 0);
+  assert.equal((await env.DB.prepare('SELECT COUNT(*) n FROM cleanings WHERE room_id = ? AND finished_at IS NULL').bind(room).first()).n, 0);
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });

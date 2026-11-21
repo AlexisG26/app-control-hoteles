@@ -827,10 +827,12 @@ function roomSheet(h, r) {
       <button class="btn" id="ext">${isH ? 'Cobrar y agregar' : 'Cobrar y extender'}</button>
       <button class="btn ghost" id="edit">Editar fechas o forma de pago</button>
       <button class="btn warn" id="out">Registrar salida ahora</button>
+      <button class="btn danger-ghost" id="cancel">Cancelar reserva</button>
       <div class="row"><button class="btn ghost" id="c">Cerrar</button></div>
       ${issueBtn}`, () => {
       bindExtend(h, r, isH, r.due_out_at, r.stay_id, isH ? 'Tiempo agregado' : 'Estadía extendida');
       $('edit').onclick = () => editStaySheet(h, r);
+      $('cancel').onclick = () => cancelStaySheet(h, r);
       $('c').onclick = closeSheet;
       $('issue').onclick = () => issueSheet(h, r);
       if ($('payNow')) $('payNow').onclick = async () => {
@@ -1033,6 +1035,26 @@ function bindPaypal(pp) {
         }, 'PayPal actualizado');
       });
     };
+  });
+}
+
+// ---- Cancelar una reserva (registrada por error o el cliente no se quedó) ----
+function cancelStaySheet(h, r) {
+  const today = hnDate();
+  const canAll = has(h.id, 'contabilidad');
+  const blocked = !canAll && hnDate(r.check_in_at) !== today;
+  sheet(`<h3>Cancelar reserva · Hab. ${esc(r.number)}</h3>
+    <p><b>${esc(r.guest)}</b> · entró ${hnShort(r.check_in_at)} ${hnTime(r.check_in_at)}</p>
+    ${blocked ? '<p class="note">Esta reserva entró en un día anterior: solo contabilidad o gerencia la pueden cancelar.</p>' : `
+    <p class="hint">Se anulan todos sus cobros (no suman a la caja ni a contabilidad) y la habitación queda <b>libre</b>. Queda registrado quién la canceló y por qué.</p>
+    <label>Motivo<input id="f-why" placeholder="Ej. el cliente canceló, se registró por error" autocomplete="off"></label>`}
+    <div class="err" id="err"></div>
+    <div class="row"><button class="btn ghost" id="c">Volver</button>${blocked ? '' : '<button class="btn danger" id="ok">Cancelar reserva</button>'}</div>`, () => {
+    $('c').onclick = () => roomSheet(h, r);
+    if ($('ok')) $('ok').onclick = (e) => act(e.target, () => {
+      if (!$('f-why').value.trim()) throw new Error('Escribe el motivo de la cancelación.');
+      return api('POST', `/api/stays/${r.stay_id}/cancel`, { reason: $('f-why').value.trim() });
+    }, `Reserva cancelada · Hab. ${r.number} libre`);
   });
 }
 

@@ -5,7 +5,7 @@ import {
   passkeyRegisterOptions, passkeyRegister, passkeyLoginOptions, passkeyLogin,
 } from './auth.js';
 import {
-  hotelConfig, pastStay, listRooms, checkIn, extendStay, editStay, changeSalePay, setSaleUsd, setFxRate, latestFx, checkOut, cleanStart, cleanFinish, reportIssue, listIssues, resolveIssue, issuePhoto,
+  hotelConfig, pastStay, listRooms, checkIn, extendStay, editStay, cancelStay, changeSalePay, setSaleUsd, setFxRate, latestFx, checkOut, cleanStart, cleanFinish, reportIssue, listIssues, resolveIssue, issuePhoto,
   addExtraSale, listSales, voidSale, poUpdate, pendingPOs, listPending, payPending, saleProof, PAY_NOW, overview, financeReport, compareFinance, getHotel, audit, PAY,
 } from './ops.js';
 import { runScheduled } from './cron.js';
@@ -80,6 +80,7 @@ on('GET', '/api/finance/compare', async ({ env, user, url }) => json(await compa
 on('GET', '/api/hotels/:hotel/rooms', async ({ env, user, p }) => json(await listRooms(env, user, p.hotel)));
 on('POST', '/api/hotels/:hotel/checkin', async ({ req, env, user, p }) => json(await checkIn(env, user, p.hotel, await body(req))));
 on('POST', '/api/hotels/:hotel/past-stay', async ({ req, env, user, p }) => json(await pastStay(env, user, p.hotel, await body(req))));
+on('POST', '/api/stays/:id/cancel', async ({ req, env, user, p }) => json(await cancelStay(env, user, p.id, await body(req))));
 on('PATCH', '/api/stays/:id', async ({ req, env, user, p }) => json(await editStay(env, user, p.id, await body(req))));
 on('POST', '/api/sales/:id/usd', async ({ req, env, user, p }) => json(await setSaleUsd(env, user, p.id, await body(req))));
 on('POST', '/api/fx', async ({ req, env, user }) => json(await setFxRate(env, user, await body(req))));

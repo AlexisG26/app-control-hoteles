@@ -188,7 +188,7 @@ export async function listRooms(env, user, hotelId) {
     const since = localToUtc(env, localDate(env), '00:00');
     const { results: outs } = await env.DB.prepare(
       `SELECT id, room_id, guest, company, rate, checked_out_at FROM stays
-        WHERE hotel_id = ? AND kind = 'noche' AND checked_out_at >= ? AND checkout_mode <> 'historico' ORDER BY checked_out_at`,
+        WHERE hotel_id = ? AND kind = 'noche' AND checked_out_at >= ? AND checkout_mode NOT IN ('historico','cancelada') ORDER BY checked_out_at`,
     ).bind(hotelId, since).all();
     for (const o of outs) lastOut.set(o.room_id, o);
   }
@@ -268,7 +268,7 @@ async function reopenableStay(env, stayId) {
   if (!s) throw notFound('Estadía no encontrada.');
   if (!s.checked_out_at) return { s, reopen: false };
   const room = await getRoom(env, s.room_id);
-  const ok = s.kind === 'noche' && s.checkout_mode !== 'historico' && localDate(env, s.checked_out_at) === localDate(env)
+  const ok = s.kind === 'noche' && !['historico', 'cancelada'].includes(s.checkout_mode) && localDate(env, s.checked_out_at) === localDate(env)
     && !room.current_stay_id && ['por_limpiar', 'limpiando', 'libre'].includes(room.status)
     && !(await env.DB.prepare('SELECT 1 FROM stays WHERE room_id = ? AND id <> ? AND check_in_at > ?').bind(s.room_id, s.id, s.checked_out_at).first());
   if (!ok) throw bad('Esta estadía ya terminó.');
@@ -334,6 +334,36 @@ export async function checkOut(env, user, stayId, mode = 'manual') {
     url: `#/hotel/${s.hotel_id}/limpieza`,
   });
   return { ok: true, room: room.number };
+}
+
+/**
+ * Cancelar una reserva en curso: anula todos sus cobros (con el motivo) y deja la habitación libre, sin limpieza.
+ * Recepción puede cancelar lo que entró hoy; lo de días anteriores, contabilidad o gerencia.
+ */
+export async function cancelStay(env, user, stayId, b) {
+  const st = await openStay(env, stayId);
+  const today = localDate(env);
+  if (!can(user, st.hotel_id, 'contabilidad')) {
+    requireRole(user, st.hotel_id, 'recepcion');
+    if (localDate(env, st.check_in_at) !== today) throw forbidden('Recepción solo puede cancelar reservas que entraron hoy. Pídeselo a contabilidad o gerencia.');
+  }
+  const reason = cleanStr(b.reason, 200);
+  if (!reason) throw bad('Escribe el motivo de la cancelación.');
+  const now = Date.now();
+  const { results: sales } = await env.DB.prepare('SELECT * FROM sales WHERE stay_id = ? AND voided_at IS NULL').bind(st.id).all();
+  let total = 0;
+  for (const x of sales) {
+    // primero los pagos registrados a cuentas pendientes de esta estadía
+    await env.DB.prepare('UPDATE sales SET voided_at = ?, voided_by = ?, void_reason = ? WHERE parent_id = ? AND voided_at IS NULL')
+      .bind(now, user.id, 'Reserva cancelada: ' + reason, x.id).run();
+    await env.DB.prepare('UPDATE sales SET voided_at = ?, voided_by = ?, void_reason = ? WHERE id = ?').bind(now, user.id, 'Reserva cancelada: ' + reason, x.id).run();
+    if (x.pay !== 'Pendiente') total += x.amount; else total += x.paid_amount || 0;
+  }
+  await env.DB.prepare("UPDATE stays SET checked_out_at = ?, checkout_mode = 'cancelada' WHERE id = ?").bind(now, st.id).run();
+  await setRoom(env, st.room_id, 'libre', null, user.id);
+  const room = await getRoom(env, st.room_id);
+  await audit(env, user, 'cancelacion', 'stay', st.id, { room: room.number, guest: st.guest, reason, cobros: sales.length });
+  return { ok: true, room: room.number, refunded: Math.round(total * 100) / 100 };
 }
 
 // ---------------- Reservas de días anteriores ----------------

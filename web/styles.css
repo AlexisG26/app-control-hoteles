@@ -312,6 +312,7 @@ fieldset.panel { margin: 0; }
 
 .btn.danger-ghost { background: none; color: var(--occ); border: 1px solid color-mix(in srgb, var(--occ) 50%, var(--line)); }
 .btn.danger-ghost.armed { background: var(--occ); color: #fff; }
+.btn.danger { background: var(--occ); color: #fff; }
 
 .seg.stay button { padding: 7px 4px; font-size: 13px; }
 
