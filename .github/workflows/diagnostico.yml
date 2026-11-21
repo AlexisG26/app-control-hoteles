@@ -1,0 +1,29 @@
+name: Diagnóstico (historial)
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Preparar wrangler.toml
+        working-directory: worker
+        env:
+          D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+        run: sed -i -E "s|database_id = \"[^\"]*\"|database_id = \"$D1_DATABASE_ID\"|" wrangler.toml
+      - name: Exportar copia de la base (solo lectura)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          command: d1 export control-hoteles --remote --output=/tmp/copia.sql
+      - name: Probar historial con datos reales
+        env:
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+        run: node --experimental-sqlite scripts/diagnostico-historial.mjs /tmp/copia.sql
+      - run: rm -f /tmp/copia.sql
+        if: always()
