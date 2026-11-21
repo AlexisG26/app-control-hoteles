@@ -9,6 +9,7 @@ import {
   addExtraSale, listSales, voidSale, poUpdate, pendingPOs, listPending, payPending, saleProof, PAY_NOW, overview, financeReport, compareFinance, getHotel, audit, PAY,
 } from './ops.js';
 import { runScheduled } from './cron.js';
+import { listHistory, historyDetail } from './history.js';
 import { handleMcp } from './mcp.js';
 import { notify } from './notify.js';
 
@@ -165,6 +166,10 @@ on('POST', '/api/notifications/test', async ({ env, user }) => {
   await notify(env, [user], { title: 'Prueba de avisos', body: 'Si ves esto, los avisos funcionan en este dispositivo.', url: '#/ajustes' });
   return json({ ok: true });
 });
+
+// ---------- Historial de reservas (solo gerencia) ----------
+on('GET', '/api/history', async ({ env, user, url }) => json(await listHistory(env, user, url.searchParams)));
+on('GET', '/api/history/:id', async ({ env, user, p }) => json(await historyDetail(env, user, p.id)));
 
 // ---------- Usuarios (solo el dueño) ----------
 on('GET', '/api/users', async ({ env, user }) => {

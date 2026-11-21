@@ -88,7 +88,7 @@ function hotelTabs(h) {
   if (h.roles.includes('contabilidad')) t.push(['contabilidad', 'Contabilidad', 'cash']);
   return t;
 }
-const globalTabs = () => [['#/global', 'Resumen', 'grid'], ['#/finanzas', 'Finanzas', 'chart'], ['#/usuarios', 'Equipo', 'users']];
+const globalTabs = () => [['#/global', 'Resumen', 'grid'], ['#/finanzas', 'Finanzas', 'chart'], ['#/historial', 'Historial', 'history'], ['#/usuarios', 'Equipo', 'users']];
 
 window.addEventListener('hashchange', render);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && me) softRefresh(); });
@@ -118,6 +118,7 @@ async function render() {
     if (r.name === 'avisos') return await viewAvisos();
     if (r.name === 'ajustes') return await viewAjustes();
     if (r.name === 'usuarios' && me.user.is_owner) return await viewUsuarios();
+    if (r.name === 'historial' && me.user.is_owner) return await viewHistorial();
     go(homeRoute());
   } catch (e) {
     app.innerHTML = header() + errorBox(e.message);
@@ -142,6 +143,7 @@ const ICON = {
   cash: '<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 9v.01M18 15v.01"/>',
   grid: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
   chart: '<path d="M4 20h16M7 16v-4M12 16V8M17 16v-7"/>',
+  history: '<path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4h4"/><path d="M12 8v4l3 2"/>',
   users: '<circle cx="9" cy="8" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 5.5a3 3 0 0 1 0 5.5M17.5 19a5 5 0 0 0-2.5-4.3"/>',
   bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/>',
@@ -1409,6 +1411,89 @@ async function viewAjustes() {
 }
 
 // ================= USUARIOS (dueño) =================
+// ---------------- Historial de reservas (solo gerencia) ----------------
+const HIST_PERIODS = [['hoy', 'Hoy'], ['7', '7 días'], ['30', '30 días'], ['mes', 'Este mes'], ['mes_ant', 'Mes ant.']];
+const HIST_STATUS = [['', 'Todas'], ['en_curso', 'En curso'], ['salio', 'Salieron'], ['reporte', 'Papel'], ['cancelada', 'Canceladas']];
+const HIST_TAG = { en_curso: ['t-info', 'En curso'], salio: ['t-ok', 'Salió'], reporte: ['', 'Reporte en papel'], cancelada: ['t-bad', 'Cancelada'] };
+const whoReg = (s) => s.created_by_name || (s.created_by ? 'Usuario eliminado' : 'Reporte en papel' + (s.paper_by ? ` · ${s.paper_by}` : ''));
+function histRange(k) {
+  const t = hnDate();
+  if (k === 'hoy') return [t, t];
+  if (k === '7') return [addDays(t, -6), t];
+  if (k === '30') return [addDays(t, -29), t];
+  return periodRange(k);
+}
+async function viewHistorial() {
+  const f = LS.get('ch-hist', { hotel: 'all', period: '30', status: '', q: '' });
+  const [from, to] = histRange(f.period);
+  const qs = new URLSearchParams({ hotel: f.hotel, from, to, status: f.status, q: f.q });
+  const d = await api('GET', '/api/history?' + qs);
+  const hotels = me.hotels;
+  const days = new Map();
+  for (const s of d.items) { const k = hnDate(s.check_in_at); if (!days.has(k)) days.set(k, []); days.get(k).push(s); }
+  app.innerHTML = header({ global: true, view: '#/historial', title: 'Gerencia' }) + `
+    <h1 class="page-title">Historial de reservas</h1>
+    <div class="seg" role="group" aria-label="Hotel">${[['all', 'Todos'], ...hotels.map((h) => [h.id, h.name.replace('Hostal ', '')])].map(([k, l]) => `<button data-hh="${k}" aria-pressed="${f.hotel === k}">${esc(l)}</button>`).join('')}</div>
+    <div class="seg period hist" role="group" aria-label="Período">${HIST_PERIODS.map(([k, l]) => `<button data-hp="${k}" aria-pressed="${f.period === k}">${l}</button>`).join('')}</div>
+    <div class="seg period hist" role="group" aria-label="Estado">${HIST_STATUS.map(([k, l]) => `<button data-hs="${k}" aria-pressed="${f.status === k}">${l}</button>`).join('')}</div>
+    <label class="search"><input id="hq" type="search" placeholder="Buscar huésped, habitación, empresa o quién registró" value="${esc(f.q)}" autocomplete="off"></label>
+    <section class="panel">
+      <div class="kpis">
+        <div><span>Reservas</span><b>${d.totals.count}</b></div>
+        <div><span>Noches</span><b>${d.totals.nights}</b></div>
+        <div><span>Cobrado</span><b>${fmt(d.totals.total)}</b></div>
+        <div><span>Canceladas</span><b>${d.totals.cancelled}</b></div>
+      </div>
+      <p class="hint">${hnShort(parseD(d.from))} – ${hnShort(parseD(d.to))}${d.items.length >= 500 ? ' · se muestran las 500 más recientes' : ''}</p>
+    </section>
+    ${d.by_user.length ? `<section class="panel"><h2>Quién registró</h2><ul class="list">${d.by_user.map((u) => `
+      <li><div class="d">${esc(u.name)}<small>${u.count} reserva${u.count === 1 ? '' : 's'}</small></div><span class="m">${fmt(u.total)}</span></li>`).join('')}</ul></section>` : ''}
+    ${d.items.length ? [...days.entries()].map(([day, list]) => `<section class="panel"><h2 style="text-transform:capitalize">${hnDay(parseD(day))}</h2>
+      <ul class="list">${list.map((s) => {
+        const tag = HIST_TAG[s.status];
+        const out = s.status === 'cancelada' ? 'cancelada ' + hnShort(s.checked_out_at) : s.kind === 'hora' ? `${s.hours} h` : `→ ${hnShort(s.checked_out_at || s.due_out_at)} · ${s.nights} noche${s.nights === 1 ? '' : 's'}`;
+        return `<li class="tap" data-hist="${s.id}"><div class="d"><b>Hab. ${esc(s.room)}</b> · ${esc(s.guest)} <span class="tag ${tag[0]}">${tag[1]}</span>
+          <small>${f.hotel === 'all' ? esc(s.hotel_name.replace('Hostal ', '')) + ' · ' : ''}${hnTime(s.check_in_at)} ${out}${s.extensions ? ` · ${s.extensions} extensión${s.extensions > 1 ? 'es' : ''}` : ''}${s.company ? ' · ' + esc(s.company) : ''}</small>
+          <small>Registró: <b>${esc(whoReg(s))}</b>${s.pays ? ' · ' + esc(s.pays.split(',').join(', ')) : ''}${s.usd ? ` · US$ ${usdFmt(s.usd)}` : ''}${s.pending > 0 ? ` · debe ${fmt(s.pending)}` : ''}</small></div>
+          <span class="m">${s.status === 'cancelada' ? '—' : fmt(s.total)}</span></li>`;
+      }).join('')}</ul></section>`).join('') : '<section class="panel"><p class="hint">No hay reservas con esos filtros.</p></section>'}`;
+  const save = (patch) => { LS.set('ch-hist', { ...f, ...patch }); viewHistorial(); };
+  app.querySelectorAll('[data-hh]').forEach((b) => { b.onclick = () => save({ hotel: b.dataset.hh }); });
+  app.querySelectorAll('[data-hp]').forEach((b) => { b.onclick = () => save({ period: b.dataset.hp }); });
+  app.querySelectorAll('[data-hs]').forEach((b) => { b.onclick = () => save({ status: b.dataset.hs }); });
+  let tq; $('hq').oninput = () => { clearTimeout(tq); tq = setTimeout(() => save({ q: $('hq').value.trim() }), 450); };
+  if (f.q) { const i = $('hq'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+  app.querySelectorAll('[data-hist]').forEach((li) => { li.onclick = () => historySheet(+li.dataset.hist); });
+}
+const LOG_LABEL = {
+  entrada: 'Registró la entrada', extension: 'Extendió la estadía', salida: 'Registró la salida', cancelacion: 'Canceló la reserva',
+  edicion_estadia: 'Cambió las fechas', cambio_pago: 'Cambió la forma de pago', anulacion: 'Anuló un cobro', pago: 'Registró un pago',
+  paypal_dolares: 'Ajustó PayPal', reserva_anterior: 'Registró como reserva de días anteriores', pago_pendiente: 'Registró un pago', marcada_sucia: 'Marcó la habitación sucia',
+};
+async function historySheet(id) {
+  const d = await api('GET', '/api/history/' + id);
+  const s = d.stay;
+  const tag = HIST_TAG[s.checkout_mode === 'cancelada' ? 'cancelada' : !s.checked_out_at ? 'en_curso' : s.checkout_mode === 'historico' ? 'reporte' : 'salio'];
+  sheet(`<h3>Hab. ${esc(s.room)} · ${esc(s.guest)}</h3>
+    <p><span class="tag ${tag[0]}">${tag[1]}</span> ${esc(s.hotel_name)}${s.company ? ' · ' + esc(s.company) : ''}${s.room_type ? ' · ' + esc(s.room_type) : ''}</p>
+    <ul class="list">
+      <li><div class="d">Registró<small>${hnShort(s.check_in_at)} ${hnTime(s.check_in_at)}</small></div><span class="m">${esc(whoReg(s))}</span></li>
+      <li><div class="d">Entrada</div><span class="m">${hnDay(s.check_in_at)}, ${hnTime(s.check_in_at)}</span></li>
+      <li><div class="d">${s.checked_out_at ? (s.checkout_mode === 'cancelada' ? 'Cancelada' : 'Salió') : 'Sale'}<small>${s.checkout_mode && s.checkout_mode !== 'cancelada' ? esc({ automatica: 'automática', manual: 'manual', historico: 'reporte en papel' }[s.checkout_mode] || s.checkout_mode) : ''}</small></div><span class="m">${hnDay(s.checked_out_at || s.due_out_at)}, ${hnTime(s.checked_out_at || s.due_out_at)}</span></li>
+      <li><div class="d">Duración</div><span class="m">${s.kind === 'hora' ? s.hours + ' h' : s.nights + ' noche' + (s.nights === 1 ? '' : 's')}</span></li>
+    </ul>
+    <h3 style="font-size:17px;margin-top:8px">Cobros</h3>
+    <ul class="list">${d.sales.map((x) => `<li class="${x.voided_at ? 'void' : ''}"><div class="d">${esc(x.kind === 'abono' ? 'Pago de pendiente' : x.concept)}
+      <small>${hnShort(parseD(x.local_date))} · ${esc(x.pay)}${x.usd_amount != null ? ` US$ ${usdFmt(x.usd_amount)}` : ''}${x.nights ? ` · ${x.nights} noche${x.nights === 1 ? '' : 's'}` : ''} · ${esc(x.created_by_name || 'Reporte en papel')}</small>
+      ${x.voided_at ? `<small>Anulado por ${esc(x.voided_by_name || '—')}: ${esc(x.void_reason || '')}</small>` : ''}</div>
+      <span class="m">${fmt(x.amount)}</span></li>`).join('') || '<li><div class="d">Sin cobros</div></li>'}</ul>
+    ${d.log.length ? `<h3 style="font-size:17px;margin-top:8px">Lo que pasó</h3><ul class="list">${d.log.map((a) => {
+      let det = ''; try { const j = JSON.parse(a.detail || '{}'); det = j.reason || j.motivo || (j.ahora && typeof j.ahora === 'string' ? j.ahora : '') || (j.ahora && j.ahora.salida ? `${j.ahora.entrada} → ${j.ahora.salida}` : ''); } catch { /* */ }
+      return `<li><div class="d">${esc(LOG_LABEL[a.action] || a.action)}${det ? `<small>${esc(det)}</small>` : ''}</div><span class="m" style="font-size:14px">${esc(a.user_name || 'Sistema')}<br><small>${hnShort(a.ts)} ${hnTime(a.ts)}</small></span></li>`;
+    }).join('')}</ul>` : ''}
+    <div class="row"><button class="btn ghost" id="c">Cerrar</button></div>`, () => { $('c').onclick = closeSheet; });
+}
+
 async function viewUsuarios() {
   const users = await api('GET', '/api/users');
   const H = me.hotels;

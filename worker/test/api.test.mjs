@@ -665,6 +665,27 @@ test('marcar sucia una habitación limpia por error (ProKinto) y avisar a limpie
   await api('POST', `/api/rooms/${room}/clean/finish`, { token: owner });
 });
 
+test('historial de reservas: solo gerencia, con quién registró cada una', async () => {
+  const today = localDate(env);
+  const h = await api('GET', `/api/history?from=${addDays(today, -5)}&to=${addDays(today, 5)}`, { token: owner });
+  assert.equal(h.status, 200, JSON.stringify(h.data));
+  assert.ok(h.data.items.length > 0);
+  const mine = h.data.items.find((x) => x.created_by_name);
+  assert.ok(mine && mine.created_by_name);
+  assert.ok(h.data.by_user.length > 0);
+  assert.ok(h.data.items.some((x) => x.status === 'cancelada'));
+  const p = await api('GET', `/api/history?hotel=prokinto&status=cancelada&q=Cancela`, { token: owner });
+  assert.equal(p.data.items.length, 1);
+  const d = await api('GET', `/api/history/${p.data.items[0].id}`, { token: owner });
+  assert.equal(d.status, 200);
+  assert.ok(d.data.sales.every((x) => x.voided_at));
+  assert.ok(d.data.log.some((a) => a.action === 'cancelacion'));
+  // nadie más lo ve
+  assert.equal((await api('GET', '/api/history', { token: recep })).status, 403);
+  assert.equal((await api('GET', '/api/history', { token: conta })).status, 403);
+  assert.equal((await api('GET', `/api/history/${p.data.items[0].id}`, { token: recep })).status, 403);
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });

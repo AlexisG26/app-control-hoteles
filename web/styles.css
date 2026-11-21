@@ -334,3 +334,13 @@ fieldset.panel { margin: 0; }
 .cd.en { border-radius: 0 10px 10px 0; }
 .cd.st.en { border-radius: 10px; }
 .cal-foot { margin-top: 6px; }
+
+/* Historial de reservas */
+.page-title { margin: 4px 0 12px; }
+.search { display: block; margin: 10px 0 14px; }
+.search input { width: 100%; }
+.list li.tap { cursor: pointer; }
+.list li.tap:active { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.seg.hist { margin-top: 8px; }
+.seg.hist button { padding: 7px 6px; font-size: 13px; }
+.list li .d small + small { margin-top: 2px; }
