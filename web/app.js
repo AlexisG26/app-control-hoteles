@@ -86,6 +86,7 @@ function hotelTabs(h) {
   if (h.roles.includes('limpieza') && h.cleaning !== 0) t.push(['limpieza', 'Limpieza', 'broom']);
   if (h.roles.some((r) => ['recepcion', 'limpieza', 'mantenimiento'].includes(r))) t.push(['problemas', 'Problemas', 'wrench']);
   if (h.roles.includes('contabilidad')) t.push(['contabilidad', 'Contabilidad', 'cash']);
+  if (me?.user?.is_owner) t.push(['historial', 'Historial', 'history']);
   return t;
 }
 const globalTabs = () => [['#/global', 'Resumen', 'grid'], ['#/finanzas', 'Finanzas', 'chart'], ['#/historial', 'Historial', 'history'], ['#/usuarios', 'Equipo', 'users']];
@@ -111,6 +112,8 @@ async function render() {
       if (!h) return go(homeRoute());
       LS.set('ch-hotel', h.id);
       const view = r.parts[2] || hotelTabs(h)[0]?.[0];
+      // Gerencia: el historial de un hotel abre el historial ya filtrado por ese hotel
+      if (view === 'historial' && me.user.is_owner) { LS.set('ch-hist', { ...LS.get('ch-hist', { period: '30', status: '', q: '' }), hotel: h.id }); return go('#/historial'); }
       const fn = { recepcion: viewRecepcion, limpieza: viewLimpieza, problemas: viewProblemas, contabilidad: viewContabilidad }[view];
       if (!fn || !hotelTabs(h).some((t) => t[0] === view)) return go(homeRoute());
       return await fn(h);
