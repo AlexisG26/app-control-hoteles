@@ -740,7 +740,9 @@ function roomSheet(h, r) {
       ${payFields(h)}
       <div class="calc" id="calc"></div><div class="err" id="err"></div>
       <div class="row"><button class="btn ghost" id="c">Cancelar</button><button class="btn" id="ok">Registrar entrada</button></div>
+      ${dirtyBtn(h)}
       ${issueBtn}`, () => {
+      bindDirty(h, r);
       let hourly = false;
       let roomType = roomTypes(h)[0] || null;
       // Varios días: noches, fecha de salida y atajos se mantienen sincronizados
@@ -852,9 +854,11 @@ function roomSheet(h, r) {
       ${r.open_issues ? `<a class="btn ghost" href="#/hotel/${h.id}/problemas">Ver problemas (${r.open_issues})</a>` : ''}
       ${has(h.id, 'limpieza') && h.cleaning !== 0 && r.status !== 'bloqueada' ? `<button class="btn" id="cl">${r.status === 'limpiando' ? 'Marcar limpia' : 'Empezar limpieza'}</button>` : ''}
       ${stayAgainBtn(h, r)}
+      ${r.status === 'limpiando' ? dirtyBtn(h, 'Volver a "por limpiar"') : ''}
       <div class="err" id="err"></div>
       <div class="row"><button class="btn ghost" id="c">Cerrar</button></div>${issueBtn}`, () => {
       $('c').onclick = closeSheet;
+      bindDirty(h, r);
       if ($('again')) $('again').onclick = () => extendAgainSheet(h, r);
       $('issue').onclick = () => issueSheet(h, r);
       if ($('cl')) $('cl').onclick = (e) => act(e.target, () => api('POST', `/api/rooms/${r.id}/clean/${r.status === 'limpiando' ? 'finish' : 'start'}`), 'Listo');
@@ -1056,6 +1060,15 @@ function cancelStaySheet(h, r) {
       return api('POST', `/api/stays/${r.stay_id}/cancel`, { reason: $('f-why').value.trim() });
     }, `Reserva cancelada · Hab. ${r.number} libre`);
   });
+}
+
+// ---- Marcar sucia (se marcó limpia por error) ----
+function dirtyBtn(h, label = 'Marcar como sucia') {
+  if (h.cleaning === 0 || !(has(h.id, 'recepcion') || has(h.id, 'limpieza'))) return '';
+  return `<button class="btn ghost" id="dirty">${label}</button>`;
+}
+function bindDirty(h, r) {
+  if ($('dirty')) $('dirty').onclick = (e) => act(e.target, () => api('POST', `/api/rooms/${r.id}/dirty`), `Hab. ${r.number} por limpiar · se avisó a limpieza`);
 }
 
 function extraSheet(h) {

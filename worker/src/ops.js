@@ -434,6 +434,26 @@ export async function cleanStart(env, user, roomId) {
   return { ok: true };
 }
 
+/** Volver a marcar una habitación como sucia (se marcó limpia por error). Avisa a limpieza. */
+export async function markDirty(env, user, roomId) {
+  const room = await getRoom(env, roomId);
+  if (!can(user, room.hotel_id, 'recepcion')) requireRole(user, room.hotel_id, 'limpieza');
+  const hotel = await getHotel(env, room.hotel_id);
+  if (hotel.cleaning === 0) throw bad('Este hotel no lleva control de limpieza.');
+  if (!['libre', 'limpiando'].includes(room.status)) throw bad('Solo una habitación libre (o en limpieza) se puede marcar como sucia.');
+  const open = await env.DB.prepare('SELECT id FROM cleanings WHERE room_id = ? AND finished_at IS NULL ORDER BY id DESC LIMIT 1').bind(room.id).first();
+  if (open) await env.DB.prepare('UPDATE cleanings SET started_at = NULL, started_by = NULL WHERE id = ?').bind(open.id).run();
+  else await env.DB.prepare('INSERT INTO cleanings (hotel_id, room_id, requested_at, source) VALUES (?,?,?,?)').bind(room.hotel_id, room.id, Date.now(), 'marcada_sucia').run();
+  await setRoom(env, room.id, 'por_limpiar', null, user.id);
+  await audit(env, user, 'marcada_sucia', 'room', room.id, { room: room.number, antes: room.status });
+  await notify(env, (await usersWithRole(env, room.hotel_id, ['limpieza'])).filter((u) => u.id !== user.id), {
+    title: `Habitación ${room.number} por limpiar`,
+    body: `${hotel.name}: ${user.name || 'Recepción'} la marcó como sucia.`,
+    url: `#/hotel/${room.hotel_id}/limpieza`,
+  });
+  return { ok: true };
+}
+
 export async function cleanFinish(env, user, roomId) {
   const room = await getRoom(env, roomId);
   requireRole(user, room.hotel_id, 'limpieza');

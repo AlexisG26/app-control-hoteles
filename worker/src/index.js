@@ -5,7 +5,7 @@ import {
   passkeyRegisterOptions, passkeyRegister, passkeyLoginOptions, passkeyLogin,
 } from './auth.js';
 import {
-  hotelConfig, pastStay, listRooms, checkIn, extendStay, editStay, cancelStay, changeSalePay, setSaleUsd, setFxRate, latestFx, checkOut, cleanStart, cleanFinish, reportIssue, listIssues, resolveIssue, issuePhoto,
+  hotelConfig, pastStay, listRooms, checkIn, extendStay, editStay, cancelStay, changeSalePay, setSaleUsd, setFxRate, latestFx, checkOut, cleanStart, cleanFinish, markDirty, reportIssue, listIssues, resolveIssue, issuePhoto,
   addExtraSale, listSales, voidSale, poUpdate, pendingPOs, listPending, payPending, saleProof, PAY_NOW, overview, financeReport, compareFinance, getHotel, audit, PAY,
 } from './ops.js';
 import { runScheduled } from './cron.js';
@@ -89,6 +89,7 @@ on('PATCH', '/api/sales/:id', async ({ req, env, user, p }) => json(await change
 on('POST', '/api/stays/:id/extend', async ({ req, env, user, p }) => json(await extendStay(env, user, p.id, await body(req))));
 on('POST', '/api/stays/:id/checkout', async ({ env, user, p }) => json(await checkOut(env, user, p.id, 'manual')));
 on('POST', '/api/rooms/:id/clean/start', async ({ env, user, p }) => json(await cleanStart(env, user, p.id)));
+on('POST', '/api/rooms/:id/dirty', async ({ env, user, p }) => json(await markDirty(env, user, p.id)));
 on('POST', '/api/rooms/:id/clean/finish', async ({ env, user, p }) => json(await cleanFinish(env, user, p.id)));
 
 // ---------- Incidencias ----------

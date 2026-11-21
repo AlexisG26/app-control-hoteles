@@ -651,6 +651,20 @@ test('cancelar una reserva en ProKinto: anula cobros y deja la habitación libre
   assert.equal((await env.DB.prepare('SELECT COUNT(*) n FROM cleanings WHERE room_id = ? AND finished_at IS NULL').bind(room).first()).n, 0);
 });
 
+test('marcar sucia una habitación limpia por error (ProKinto) y avisar a limpieza', async () => {
+  const room = await roomId('prokinto', '506');
+  const before = (await env.DB.prepare('SELECT COUNT(*) n FROM notifications').first()).n;
+  const r = await api('POST', `/api/rooms/${room}/dirty`, { token: owner });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const rm = (await api('GET', '/api/hotels/prokinto/rooms', { token: owner })).data.find((z) => z.id === room);
+  assert.equal(rm.status, 'por_limpiar');
+  assert.equal((await env.DB.prepare('SELECT COUNT(*) n FROM cleanings WHERE room_id = ? AND finished_at IS NULL').bind(room).first()).n, 1);
+  assert.ok((await env.DB.prepare('SELECT COUNT(*) n FROM notifications').first()).n >= before);
+  // ocupada no se puede
+  assert.equal((await api('POST', `/api/rooms/${room}/dirty`, { token: owner })).status, 400);
+  await api('POST', `/api/rooms/${room}/clean/finish`, { token: owner });
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });
