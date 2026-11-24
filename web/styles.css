@@ -344,3 +344,11 @@ fieldset.panel { margin: 0; }
 .seg.hist { margin-top: 8px; }
 .seg.hist button { padding: 7px 6px; font-size: 13px; }
 .list li .d small + small { margin-top: 2px; }
+
+/* Clientes */
+.btn.small { width: auto; padding: 8px 14px; font-size: 14px; min-height: 0; }
+.sugg { display: flex; flex-direction: column; gap: 6px; margin-top: -4px; }
+.sugg:empty { display: none; }
+.sugg button { text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; color: var(--fg); font: inherit; display: flex; flex-direction: column; gap: 2px; cursor: pointer; }
+.sugg button small { color: var(--muted); font-size: 13px; }
+.sugg .hint { margin: 0; }

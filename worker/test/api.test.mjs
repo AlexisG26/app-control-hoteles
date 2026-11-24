@@ -686,6 +686,48 @@ test('historial de reservas: solo gerencia, con quién registró cada una', asyn
   assert.equal((await api('GET', `/api/history/${p.data.items[0].id}`, { token: recep })).status, 403);
 });
 
+test('base de datos de clientes: se crean al registrar, se buscan, se editan y se unen', async () => {
+  const room = await roomId('prokinto', '508');
+  const rr = (await api('GET', '/api/hotels/prokinto/rooms', { token: owner })).data.find((z) => z.id === room);
+  if (rr.stay_id) await api('POST', `/api/stays/${rr.stay_id}/checkout`, { token: owner });
+  await env.DB.prepare("UPDATE rooms SET status = 'libre', current_stay_id = NULL WHERE id = ?").bind(room).run();
+  const a = await api('POST', '/api/hotels/prokinto/checkin', { token: owner, body: { room_id: room, guest: 'Ramón Pérez', phone: '9988-7766', kind: 'noche', nights: 1, rate: 700, pay: 'Efectivo' } });
+  assert.equal(a.status, 200, JSON.stringify(a.data));
+  await api('POST', `/api/stays/${a.data.stay_id}/checkout`, { token: owner });
+  await env.DB.prepare("UPDATE rooms SET status = 'libre' WHERE id = ?").bind(room).run();
+  // Recepción lo encuentra por nombre (sin tildes) o teléfono, y la segunda visita queda en el mismo cliente
+  const found = await api('GET', '/api/hotels/prado/guests?q=ramon', { token: recep });
+  assert.equal(found.status, 200);
+  assert.equal(found.data[0].name, 'Ramón Pérez');
+  assert.equal(found.data[0].phone, '9988-7766');
+  assert.equal(found.data[0].spent, undefined); // recepción no ve montos
+  const b = await api('POST', '/api/hotels/prokinto/checkin', { token: owner, body: { room_id: room, guest: 'Ramón Pérez', guest_id: found.data[0].id, kind: 'noche', nights: 2, rate: 700, pay: 'Tarjeta' } });
+  assert.equal(b.status, 200);
+  // Una estadía vieja sin cliente se enlaza sola
+  const old = await env.DB.prepare("INSERT INTO stays (hotel_id, room_id, guest, kind, check_in_at, due_out_at, nights, hours, checked_out_at, checkout_mode) VALUES ('prado', ?, 'RAMON PEREZ', 'noche', 1000, 2000, 1, 0, 2000, 'historico')").bind(await roomId('prado', '2')).run();
+  const list = await api('GET', '/api/guests?q=ramon', { token: owner });
+  assert.equal(list.status, 200, JSON.stringify(list.data));
+  assert.equal(list.data.items.length, 1);
+  const g = list.data.items[0];
+  assert.equal(g.visits, 3); assert.equal(g.nights, 4); assert.equal(g.spent, 2100);
+  assert.ok(g.hotels.includes('prado') && g.hotels.includes('prokinto'));
+  // Editar (y el nombre nuevo pasa a sus estadías)
+  const e = await api('PATCH', `/api/guests/${g.id}`, { token: owner, body: { name: 'Ramón A. Pérez', email: 'ramon@example.com', document: '0801-1990-12345' } });
+  assert.equal(e.status, 200, JSON.stringify(e.data));
+  assert.equal((await env.DB.prepare('SELECT guest FROM stays WHERE id = ?').bind(old.meta.last_row_id).first()).guest, 'Ramón A. Pérez');
+  // Unir un duplicado escrito con iniciales
+  await env.DB.prepare("INSERT INTO guests (name, name_key, phone, created_at, updated_at) VALUES ('Ramón P.', 'ramon p', NULL, 0, 0)").run();
+  const dup = (await api('GET', '/api/guests?q=ramon p', { token: owner })).data.items.find((x) => x.name === 'Ramón P.');
+  const m = await api('POST', `/api/guests/${dup.id}/merge`, { token: owner, body: { into: g.id } });
+  assert.equal(m.status, 200);
+  const d = await api('GET', `/api/guests/${g.id}`, { token: owner });
+  assert.equal(d.data.stays.length, 3);
+  // Solo gerencia ve la base completa
+  assert.equal((await api('GET', '/api/guests', { token: recep })).status, 403);
+  assert.equal((await api('GET', '/api/guests', { token: conta })).status, 403);
+  assert.equal((await api('GET', '/api/hotels/prado/guests?q=ra', { token: limpia })).status, 403);
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });

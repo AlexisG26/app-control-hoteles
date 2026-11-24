@@ -10,6 +10,7 @@ import {
 } from './ops.js';
 import { runScheduled } from './cron.js';
 import { listHistory, historyDetail } from './history.js';
+import { listGuests, guestDetail, updateGuest, mergeGuest, searchGuests } from './guests.js';
 import { handleMcp } from './mcp.js';
 import { notify } from './notify.js';
 
@@ -170,6 +171,13 @@ on('POST', '/api/notifications/test', async ({ env, user }) => {
 // ---------- Historial de reservas (solo gerencia) ----------
 on('GET', '/api/history', async ({ env, user, url }) => json(await listHistory(env, user, url.searchParams)));
 on('GET', '/api/history/:id', async ({ env, user, p }) => json(await historyDetail(env, user, p.id)));
+
+// ---------- Clientes (gerencia; recepción solo busca) ----------
+on('GET', '/api/guests', async ({ env, user, url }) => json(await listGuests(env, user, url.searchParams)));
+on('GET', '/api/guests/:id', async ({ env, user, p }) => json(await guestDetail(env, user, p.id)));
+on('PATCH', '/api/guests/:id', async ({ req, env, user, p }) => json(await updateGuest(env, user, p.id, await body(req))));
+on('POST', '/api/guests/:id/merge', async ({ req, env, user, p }) => json(await mergeGuest(env, user, p.id, await body(req))));
+on('GET', '/api/hotels/:hotel/guests', async ({ env, user, p, url }) => json(await searchGuests(env, user, p.hotel, url.searchParams)));
 
 // ---------- Usuarios (solo el dueño) ----------
 on('GET', '/api/users', async ({ env, user }) => {

@@ -89,7 +89,7 @@ function hotelTabs(h) {
   if (me?.user?.is_owner) t.push(['historial', 'Historial', 'history']);
   return t;
 }
-const globalTabs = () => [['#/global', 'Resumen', 'grid'], ['#/finanzas', 'Finanzas', 'chart'], ['#/historial', 'Historial', 'history'], ['#/usuarios', 'Equipo', 'users']];
+const globalTabs = () => [['#/global', 'Resumen', 'grid'], ['#/finanzas', 'Finanzas', 'chart'], ['#/historial', 'Historial', 'history'], ['#/clientes', 'Clientes', 'person'], ['#/usuarios', 'Equipo', 'users']];
 
 window.addEventListener('hashchange', render);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && me) softRefresh(); });
@@ -122,6 +122,7 @@ async function render() {
     if (r.name === 'ajustes') return await viewAjustes();
     if (r.name === 'usuarios' && me.user.is_owner) return await viewUsuarios();
     if (r.name === 'historial' && me.user.is_owner) return await viewHistorial();
+    if (r.name === 'clientes' && me.user.is_owner) return await viewClientes();
     go(homeRoute());
   } catch (e) {
     app.innerHTML = header() + errorBox(e.message);
@@ -147,6 +148,7 @@ const ICON = {
   grid: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
   chart: '<path d="M4 20h16M7 16v-4M12 16V8M17 16v-7"/>',
   history: '<path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4h4"/><path d="M12 8v4l3 2"/>',
+  person: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
   users: '<circle cx="9" cy="8" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 5.5a3 3 0 0 1 0 5.5M17.5 19a5 5 0 0 0-2.5-4.3"/>',
   bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/>',
@@ -726,7 +728,9 @@ function roomSheet(h, r) {
     const hourOK = !!h.allow_hourly;
     sheet(`<h3>Entrada · Hab. ${esc(r.number)}</h3>
       ${stayAgainBtn(h, r)}
-      <label>Nombre del huésped<input id="f-g" autocomplete="off"></label>
+      <label>Nombre del huésped<input id="f-g" autocomplete="off" placeholder="Escribe para buscar clientes conocidos"></label>
+      <div class="sugg" id="f-g-s"></div>
+      <label>Teléfono<input id="f-ph" type="tel" inputmode="tel" autocomplete="off" placeholder="Opcional"></label>
       <label>Empresa (si es a crédito o por convenio)<input id="f-co" list="companies" autocomplete="off" placeholder="Opcional">
         <datalist id="companies">${(h.companies || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
       ${hourOK ? `<div class="seg" role="group" aria-label="Tipo"><button type="button" id="ty-n" aria-pressed="true">Por noche</button><button type="button" id="ty-h" aria-pressed="false">Por hora</button></div>` : ''}
@@ -786,6 +790,7 @@ function roomSheet(h, r) {
         };
       });
       // Si es empresa de crédito: tarifa de empresa y pago pendiente
+      guestPicker(h, 'f-g', 'f-ph', 'f-co');
       $('f-co').oninput = () => applyRate(false);
       $('f-co').onchange = () => {
         if (isCredit(h, $('f-co').value) && $('f-pay').value === 'Efectivo') { $('f-pay').value = 'Pendiente'; $('f-pay').dispatchEvent(new Event('change')); }
@@ -811,7 +816,7 @@ function roomSheet(h, r) {
       $('c').onclick = closeSheet;
       $('issue').onclick = () => issueSheet(h, r);
       $('ok').onclick = (e) => act(e.target, async () => {
-        const b = { room_id: r.id, guest: $('f-g').value, company: $('f-co').value.trim() || undefined, ...payBody() };
+        const b = { room_id: r.id, guest: $('f-g').value, guest_id: $('f-g').dataset.gid || undefined, phone: $('f-ph').value.trim() || undefined, company: $('f-co').value.trim() || undefined, ...payBody() };
         if (hourly) { Object.assign(b, { kind: 'hora', hours: +$('f-h').value, amount: +$('f-hm').value }); LS.set('ch-hours', +$('f-h').value); LS.set('ch-hamt', +$('f-hm').value); }
         else {
           const hidePrice = $('f-p').closest('label').hidden;
@@ -1497,6 +1502,117 @@ async function historySheet(id) {
     <div class="row"><button class="btn ghost" id="c">Cerrar</button></div>`, () => { $('c').onclick = closeSheet; });
 }
 
+// ---- Buscar clientes conocidos al escribir el nombre (recepción) ----
+function guestPicker(h, nameId, phoneId, coId) {
+  const inp = $(nameId), box = $(nameId + '-s');
+  let t, seq = 0;
+  inp.addEventListener('input', () => {
+    delete inp.dataset.gid;
+    clearTimeout(t);
+    const q = inp.value.trim();
+    if (q.length < 2) { box.innerHTML = ''; return; }
+    t = setTimeout(async () => {
+      const my = ++seq;
+      let list = [];
+      try { list = await api('GET', `/api/hotels/${h.id}/guests?q=${encodeURIComponent(q)}`); } catch { /* sin conexión: se escribe a mano */ }
+      if (my !== seq) return;
+      box.innerHTML = list.map((g, i) => `<button type="button" data-gi="${i}"><b>${esc(g.name)}</b><small>${[g.phone, g.company, g.visits ? `${g.visits} visita${g.visits === 1 ? '' : 's'}` : '', g.last_date ? 'última ' + hnShort(parseD(g.last_date)) : ''].filter(Boolean).map(esc).join(' · ')}</small></button>`).join('');
+      box.querySelectorAll('[data-gi]').forEach((b) => {
+        b.onclick = () => {
+          const g = list[+b.dataset.gi];
+          inp.value = g.name; inp.dataset.gid = g.id;
+          if (g.phone && !$(phoneId).value) $(phoneId).value = g.phone;
+          if (g.company && !$(coId).value) { $(coId).value = g.company; $(coId).dispatchEvent(new Event('input')); $(coId).dispatchEvent(new Event('change')); }
+          box.innerHTML = `<p class="hint">Cliente conocido${g.visits ? ` · ${g.visits} visita${g.visits === 1 ? '' : 's'}` : ''} ✓</p>`;
+        };
+      });
+    }, 250);
+  });
+}
+
+// ---------------- Clientes (solo gerencia) ----------------
+const HOTEL_SHORT = (id) => (me.hotels.find((h) => h.id === id)?.name || id).replace('Hostal ', '');
+async function viewClientes() {
+  const f = LS.get('ch-cli', { hotel: 'all', sort: 'recent', q: '' });
+  const qs = new URLSearchParams({ hotel: f.hotel, sort: f.sort, q: f.q });
+  const d = await api('GET', '/api/guests?' + qs);
+  app.innerHTML = header({ global: true, view: '#/clientes', title: 'Gerencia' }) + `
+    <div class="sec-head"><h1 class="page-title">Clientes</h1><button class="btn ghost small" id="csv">Exportar</button></div>
+    <div class="seg" role="group" aria-label="Hotel">${[['all', 'Todos'], ...me.hotels.map((h) => [h.id, HOTEL_SHORT(h.id)])].map(([k, l]) => `<button data-ch="${k}" aria-pressed="${f.hotel === k}">${esc(l)}</button>`).join('')}</div>
+    <div class="seg period hist" role="group" aria-label="Orden">${[['recent', 'Recientes'], ['visits', 'Más visitas'], ['spent', 'Más gasto'], ['name', 'A–Z']].map(([k, l]) => `<button data-cs="${k}" aria-pressed="${f.sort === k}">${l}</button>`).join('')}</div>
+    <label class="search"><input id="cq" type="search" placeholder="Nombre, teléfono, identidad o empresa" value="${esc(f.q)}" autocomplete="off"></label>
+    <section class="panel"><div class="kpis">
+      <div><span>Clientes</span><b>${d.totals.total || 0}</b></div>
+      <div><span>Regresaron</span><b>${d.totals.repeat || 0}</b></div>
+      <div><span>Con teléfono</span><b>${d.totals.with_phone || 0}</b></div>
+    </div><p class="hint">"Regresaron" = 2 visitas o más. Los clientes se crean solos al registrar una entrada.</p></section>
+    <section class="panel">${d.items.length ? `<ul class="list">${d.items.map((g) => `
+      <li class="tap" data-g="${g.id}"><div class="d"><b>${esc(g.name)}</b>${g.staying ? ' <span class="tag t-info">Hospedado</span>' : ''}${g.company ? ` <span class="tag">${esc(g.company)}</span>` : ''}
+        <small>${g.visits} visita${g.visits === 1 ? '' : 's'} · ${g.nights} noche${g.nights === 1 ? '' : 's'}${g.last_visit ? ' · última ' + hnShort(g.last_visit) : ''}${g.hotels && f.hotel === 'all' ? ' · ' + g.hotels.split(',').map(HOTEL_SHORT).map(esc).join(', ') : ''}</small>
+        ${g.phone || g.pending > 0 ? `<small>${g.phone ? esc(g.phone) : ''}${g.phone && g.pending > 0 ? ' · ' : ''}${g.pending > 0 ? 'debe ' + fmt(g.pending) : ''}</small>` : ''}</div>
+        <span class="m">${fmt(g.spent)}</span></li>`).join('')}</ul>` : '<p class="hint">No hay clientes con esos filtros.</p>'}</section>`;
+  const save = (patch) => { LS.set('ch-cli', { ...f, ...patch }); viewClientes(); };
+  app.querySelectorAll('[data-ch]').forEach((b) => { b.onclick = () => save({ hotel: b.dataset.ch }); });
+  app.querySelectorAll('[data-cs]').forEach((b) => { b.onclick = () => save({ sort: b.dataset.cs }); });
+  let tq; $('cq').oninput = () => { clearTimeout(tq); tq = setTimeout(() => save({ q: $('cq').value.trim() }), 450); };
+  if (f.q) { const i = $('cq'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+  app.querySelectorAll('[data-g]').forEach((li) => { li.onclick = () => guestSheet(+li.dataset.g); });
+  $('csv').onclick = () => {
+    const rows = [['Nombre', 'Teléfono', 'Correo', 'Identidad', 'Empresa', 'Visitas', 'Noches', 'Gastado (L)', 'Debe (L)', 'Primera visita', 'Última visita', 'Hoteles', 'Notas'],
+      ...d.items.map((g) => [g.name, g.phone, g.email, g.document, g.company, g.visits, g.nights, g.spent, g.pending, g.first_visit ? hnDate(g.first_visit) : '', g.last_visit ? hnDate(g.last_visit) : '', (g.hotels || '').split(',').map(HOTEL_SHORT).join(' / '), g.notes])];
+    const csv = '﻿' + rows.map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `clientes-${hnDate()}.csv`; a.click();
+  };
+}
+async function guestSheet(id) {
+  const d = await api('GET', '/api/guests/' + id);
+  const g = d.guest;
+  const wa = g.phone ? 'https://wa.me/' + (g.phone.replace(/\D/g, '').length === 8 ? '504' : '') + g.phone.replace(/\D/g, '') : '';
+  sheet(`<h3>${esc(g.name)}</h3>
+    ${wa ? `<p><a class="btn ghost small" href="${wa}" target="_blank" rel="noopener">Escribir por WhatsApp</a></p>` : ''}
+    <label>Nombre<input id="g-n" value="${esc(g.name)}" autocomplete="off"></label>
+    <div class="row"><label>Teléfono<input id="g-ph" type="tel" inputmode="tel" value="${esc(g.phone || '')}"></label><label>Identidad / pasaporte<input id="g-doc" value="${esc(g.document || '')}" autocomplete="off"></label></div>
+    <label>Correo<input id="g-em" type="email" inputmode="email" value="${esc(g.email || '')}" autocomplete="off"></label>
+    <label>Empresa<input id="g-co" value="${esc(g.company || '')}" autocomplete="off"></label>
+    <label>Notas<textarea id="g-no" rows="2" placeholder="Preferencias, avisos, etc.">${esc(g.notes || '')}</textarea></label>
+    <div class="err" id="err"></div>
+    <button class="btn" id="g-save">Guardar datos</button>
+    <h3 style="font-size:17px;margin-top:8px">Visitas (${d.stays.length})</h3>
+    <ul class="list">${d.stays.map((s) => `<li><div class="d">${esc(s.hotel_name.replace('Hostal ', ''))} · Hab. ${esc(s.room)}${s.checkout_mode === 'cancelada' ? ' <span class="tag t-bad">Cancelada</span>' : !s.checked_out_at ? ' <span class="tag t-info">En curso</span>' : ''}
+      <small>${hnShort(s.check_in_at)} → ${hnShort(s.checked_out_at || s.due_out_at)} · ${s.kind === 'hora' ? s.hours + ' h' : s.nights + ' noche' + (s.nights === 1 ? '' : 's')}${s.pays ? ' · ' + esc(s.pays.split(',').join(', ')) : ''}</small>
+      <small>Registró: ${esc(s.created_by_name || 'Reporte en papel')}</small></div><span class="m">${s.checkout_mode === 'cancelada' ? '—' : fmt(s.total)}</span></li>`).join('') || '<li><div class="d">Sin visitas</div></li>'}</ul>
+    <h3 style="font-size:17px;margin-top:8px">¿Está repetido?</h3>
+    <p class="hint">Si este cliente aparece dos veces (por ejemplo "Orlin R." y "Orlin Regalado"), búscalo aquí y únelos: sus visitas quedan en un solo cliente.</p>
+    <label><input id="g-mq" type="search" placeholder="Buscar el otro registro" autocomplete="off"></label>
+    <div class="sugg" id="g-ms"></div>
+    <div class="row"><button class="btn ghost" id="c">Cerrar</button></div>`, () => {
+    $('c').onclick = closeSheet;
+    $('g-save').onclick = (e) => act(e.target, () => api('PATCH', '/api/guests/' + g.id, {
+      name: $('g-n').value, phone: $('g-ph').value, document: $('g-doc').value, email: $('g-em').value, company: $('g-co').value, notes: $('g-no').value,
+    }), 'Cliente guardado');
+    let t;
+    $('g-mq').oninput = () => {
+      clearTimeout(t);
+      const q = $('g-mq').value.trim();
+      if (q.length < 2) { $('g-ms').innerHTML = ''; return; }
+      t = setTimeout(async () => {
+        const list = (await api('GET', '/api/guests?' + new URLSearchParams({ q }))).items.filter((x) => x.id !== g.id).slice(0, 6);
+        $('g-ms').innerHTML = list.map((x) => `<button type="button" data-into="${x.id}"><b>${esc(x.name)}</b><small>${x.visits} visita${x.visits === 1 ? '' : 's'}${x.phone ? ' · ' + esc(x.phone) : ''}</small></button>`).join('') || '<p class="hint">No encontré otro registro.</p>';
+        $('g-ms').querySelectorAll('[data-into]').forEach((b) => {
+          b.onclick = async () => {
+            const other = list.find((x) => x.id === +b.dataset.into);
+            if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.querySelector('small').textContent = `Toca otra vez para unir: quedará como "${other.name}"`; return; }
+            try { await api('POST', `/api/guests/${g.id}/merge`, { into: other.id }); toast('Clientes unidos'); await render(); guestSheet(other.id); }
+            catch (err) { $('err').textContent = err.message; }
+          };
+        });
+      }, 300);
+    };
+  });
+}
+
 async function viewUsuarios() {
   const users = await api('GET', '/api/users');
   const H = me.hotels;
@@ -1564,7 +1680,9 @@ async function pastStaySheet(h, last = {}) {
       <input id="p-d" type="hidden" value="${last.date || addDays(today, -1)}">
       <label>Habitación<select id="p-r">${rooms.map((r) => `<option value="${r.id}" ${String(last.room_id) === String(r.id) ? 'selected' : ''}>${esc(r.number)}${r.status !== 'libre' ? ` (${statusLabel[r.status].toLowerCase()} ahora)` : ''}</option>`).join('')}</select></label>
     </div>
-    <label>Nombre del huésped<input id="p-g" autocomplete="off"></label>
+    <label>Nombre del huésped<input id="p-g" autocomplete="off" placeholder="Escribe para buscar clientes conocidos"></label>
+    <div class="sugg" id="p-g-s"></div>
+    <label>Teléfono<input id="p-ph" type="tel" inputmode="tel" autocomplete="off" placeholder="Opcional"></label>
     <label>Empresa (si es a crédito o por convenio)<input id="p-co" list="p-companies" autocomplete="off" placeholder="Opcional">
       <datalist id="p-companies">${(h.companies || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
     ${types.length ? `<div class="seg types" role="group" aria-label="Tipo de habitación">${types.map((t, i) => `<button type="button" data-ptype="${esc(t)}" aria-pressed="${i === 0}">${esc(t)}<small data-pprice="${esc(t)}"></small></button>`).join('')}</div>` : ''}
@@ -1587,6 +1705,7 @@ async function pastStaySheet(h, last = {}) {
     };
     const setRate = () => { const v = roomType ? typeRate(h, roomType, isCredit(h, $('p-co').value)) : null; if (v !== null) $('p-p').value = v; upd(); };
     $('sheetHost').querySelectorAll('[data-ptype]').forEach((t) => { t.onclick = () => { roomType = t.dataset.ptype; $('sheetHost').querySelectorAll('[data-ptype]').forEach((x) => x.setAttribute('aria-pressed', x === t)); setRate(); }; });
+    guestPicker(h, 'p-g', 'p-ph', 'p-co');
     $('p-co').onchange = () => { if (isCredit(h, $('p-co').value) && $('f-pay').value === 'Efectivo') { $('f-pay').value = 'Pendiente'; $('f-pay').dispatchEvent(new Event('change')); } setRate(); };
     const calp = stayCalendar($('calp'), {
       start: $('p-d').value, end: addDays($('p-d').value, 1), mode: 'range', maxStart: today,
@@ -1598,7 +1717,7 @@ async function pastStaySheet(h, last = {}) {
     $('c').onclick = closeSheet;
     const save = async (btn, more) => {
       $('err').textContent = ''; btn.disabled = true;
-      const body = { date: $('p-d').value, room_id: +$('p-r').value, guest: $('p-g').value, company: $('p-co').value.trim() || undefined, room_type: roomType || undefined, nights: +$('p-n').value, rate: +$('p-p').value };
+      const body = { date: $('p-d').value, room_id: +$('p-r').value, guest: $('p-g').value, guest_id: $('p-g').dataset.gid || undefined, phone: $('p-ph').value.trim() || undefined, company: $('p-co').value.trim() || undefined, room_type: roomType || undefined, nights: +$('p-n').value, rate: +$('p-p').value };
       try {
         Object.assign(body, payBody());
         if (!body.date) throw new Error('Elige la fecha de entrada.');

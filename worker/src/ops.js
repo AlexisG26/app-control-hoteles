@@ -4,6 +4,7 @@ import {
 } from './util.js';
 import { can, requireRole, rolesIn } from './auth.js';
 import { notify, usersWithRole } from './notify.js';
+import { resolveGuest } from './guests.js';
 
 export const PAY = ['Efectivo', 'Tarjeta', 'Transferencia', 'PayPal', 'Orden de compra', 'Pendiente'];
 /** Formas con las que se liquida una cuenta pendiente. */
@@ -238,10 +239,11 @@ export async function checkIn(env, user, hotelId, b) {
     concept = `Hab. ${room.number} · ${guest}${company ? ` · ${company}` : ''}`;
   }
 
+  const guestId = await resolveGuest(env, { guest_id: b.guest_id, name: guest, phone: b.phone, document: b.document, company });
   const st = await env.DB.prepare(
-    `INSERT INTO stays (hotel_id, room_id, guest, kind, check_in_at, due_out_at, nights, hours, rate, created_by, room_type, company)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-  ).bind(hotel.id, room.id, guest, kind, now, due, nights, hours, rate, user.id, roomType, company).run();
+    `INSERT INTO stays (hotel_id, room_id, guest, kind, check_in_at, due_out_at, nights, hours, rate, created_by, room_type, company, guest_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).bind(hotel.id, room.id, guest, kind, now, due, nights, hours, rate, user.id, roomType, company, guestId).run();
   const stayId = st.meta.last_row_id;
   // Ocupar la habitación solo si sigue libre (evita dos entradas simultáneas).
   const upd = await env.DB.prepare(`UPDATE rooms SET status='ocupada', current_stay_id=?, updated_at=?, updated_by=? WHERE id=? AND status='libre'`)
@@ -401,10 +403,11 @@ export async function pastStay(env, user, hotelId, b) {
   if (clash) throw bad(`La habitación ${room.number} ya tiene a ${clash.guest} en esas fechas.`);
   const ongoing = due > now;
   if (ongoing && room.status !== 'libre') throw bad(`La habitación ${room.number} está ${room.status.replace('_', ' ')} ahora. Si la estadía sigue, primero libérala.`);
+  const guestId = await resolveGuest(env, { guest_id: b.guest_id, name: guest, phone: b.phone, document: b.document, company });
   const st = await env.DB.prepare(
-    `INSERT INTO stays (hotel_id, room_id, guest, kind, check_in_at, due_out_at, nights, hours, rate, created_by, room_type, company, checked_out_at, checkout_mode)
-     VALUES (?,?,?,'noche',?,?,?,0,?,?,?,?,?,?)`,
-  ).bind(hotel.id, room.id, guest, checkIn, due, nights, rate, user.id, roomType, company, ongoing ? null : due, ongoing ? null : 'historico').run();
+    `INSERT INTO stays (hotel_id, room_id, guest, kind, check_in_at, due_out_at, nights, hours, rate, created_by, room_type, company, checked_out_at, checkout_mode, guest_id)
+     VALUES (?,?,?,'noche',?,?,?,0,?,?,?,?,?,?,?)`,
+  ).bind(hotel.id, room.id, guest, checkIn, due, nights, rate, user.id, roomType, company, ongoing ? null : due, ongoing ? null : 'historico', guestId).run();
   const stayId = st.meta.last_row_id;
   if (ongoing) {
     await env.DB.prepare(`UPDATE rooms SET status='ocupada', current_stay_id=?, updated_at=?, updated_by=? WHERE id=? AND status='libre'`)
