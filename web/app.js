@@ -739,6 +739,7 @@ function roomSheet(h, r) {
         <div class="seg stay" role="group" aria-label="Duración">${[[1, '1 noche'], [2, '2'], [3, '3'], [7, '1 semana'], [30, '1 mes']].map(([n, l]) => `<button type="button" data-nights="${n}" aria-pressed="${n === 1}">${l}</button>`).join('')}</div>
         <label>Noches<input id="f-n" type="number" min="1" max="120" value="1" inputmode="numeric"></label>
         <input id="f-out" type="hidden" value="${addDays(hnDate(), 1)}">
+        <p class="hint" style="margin:0">¿Entró otro día y no se registró? Toca en el calendario el día que entró y luego el de salida.</p>
         <div id="cal"></div>
         <label>Precio por noche (L)<input id="f-p" type="number" min="0" step="any" inputmode="decimal" value="${LS.get('ch-rate-' + h.id, '')}"></label>
         <p class="hint" id="rateHint"></p>
@@ -757,13 +758,15 @@ function roomSheet(h, r) {
       // Varios días: noches, fecha de salida y atajos se mantienen sincronizados
       const today = hnDate();
       const syncChips = () => $('sheetHost').querySelectorAll('[data-nights]').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.nights === +$('f-n').value)));
+      // El día de entrada es hoy; si el huésped entró antes y no se registró, se toca ese día en el calendario.
+      let startD = today;
       const cal = stayCalendar($('cal'), {
-        start: today, end: addDays(today, 1),
-        onChange: (st, en) => { const n = Math.round((parseD(en) - parseD(st)) / 86400000); $('f-n').value = n; $('f-out').value = en; syncChips(); upd(); },
+        start: today, end: addDays(today, 1), mode: 'range', maxStart: today, maxNights: 120,
+        onChange: (st, en) => { startD = st; const n = Math.round((parseD(en) - parseD(st)) / 86400000); $('f-n').value = n; $('f-out').value = en; syncChips(); upd(); },
       });
       const setNights = (n) => {
         n = Math.min(120, Math.max(1, Math.floor(+n || 1)));
-        $('f-n').value = n; $('f-out').value = addDays(today, n); cal.set(today, addDays(today, n)); syncChips(); upd();
+        $('f-n').value = n; $('f-out').value = addDays(startD, n); cal.set(startD, addDays(startD, n)); syncChips(); upd();
       };
       $('sheetHost').querySelectorAll('[data-nights]').forEach((b) => { b.onclick = () => setNights(b.dataset.nights); });
       // Precio según tipo: tarifa de empresa si es empresa de crédito; si no, tarifa de clientes; si no hay, el último usado para ese tipo.
@@ -804,13 +807,15 @@ function roomSheet(h, r) {
         } else {
           const n = Math.max(1, +$('f-n').value || 1);
           const hidden = $('f-p').closest('label').hidden;
-          $('calc').innerHTML = `${n} noche${n > 1 ? 's' : ''} · sale ${hnDay(parseD(addDays(hnDate(), n)))}, ${h.checkout_time}${hidden ? ' · tarifa de empresa' : ` · <b>Total ${fmt(n * (+$('f-p').value || 0))}</b>`}`;
+          const past = typeof startD !== 'undefined' && startD < hnDate();
+          $('calc').innerHTML = `${past ? `Entró el <b>${hnDay(parseD(startD))}</b> · ` : ''}${n} noche${n > 1 ? 's' : ''} · sale ${hnDay(parseD(addDays(past ? startD : hnDate(), n)))}, ${h.checkout_time}${hidden ? ' · tarifa de empresa' : ` · <b>Total ${fmt(n * (+$('f-p').value || 0))}</b>`}`;
+          if (past && addDays(startD, n) <= hnDate()) $('calc').innerHTML += '<br><b>La salida debe ser después de hoy</b> (el huésped sigue aquí). Para reservas ya terminadas usa Contabilidad.';
         }
       };
       const setType = (x) => { hourly = x; $('g-n').hidden = x; $('g-h').hidden = !x; $('ty-n').setAttribute('aria-pressed', !x); $('ty-h').setAttribute('aria-pressed', x); upd(); };
       if (hourOK) { $('ty-n').onclick = () => setType(false); $('ty-h').onclick = () => setType(true); }
       ['f-p', 'f-h', 'f-hm'].forEach((id) => { $(id).oninput = upd; });
-      $('f-n').oninput = () => { const n = Math.floor(+$('f-n').value || 0); if (n >= 1) { const m = Math.min(120, n); $('f-out').value = addDays(today, m); cal.set(today, addDays(today, m)); syncChips(); } upd(); };
+      $('f-n').oninput = () => { const n = Math.floor(+$('f-n').value || 0); if (n >= 1) { const m = Math.min(120, n); $('f-out').value = addDays(startD, m); cal.set(startD, addDays(startD, m)); syncChips(); } upd(); };
       upd(); bindPay();
       if ($('again')) $('again').onclick = () => extendAgainSheet(h, r);
       $('c').onclick = closeSheet;
@@ -825,6 +830,12 @@ function roomSheet(h, r) {
           LS.set('ch-rate-' + h.id, +$('f-p').value);
           if (roomType && !isCredit(h, $('f-co').value)) LS.set(`ch-rate-${h.id}-${roomType}`, +$('f-p').value);
         }
+        if (!hourly && startD < hnDate()) {
+          // Entró días atrás: se registra desde ese día (las noches y el cobro cuentan desde la entrada real)
+          if (addDays(startD, +$('f-n').value) <= hnDate()) throw new Error('La salida debe ser después de hoy. Para reservas ya terminadas usa Contabilidad → Registrar reserva de días anteriores.');
+          Object.assign(b, { date: startD });
+          return api('POST', `/api/hotels/${h.id}/past-stay`, b);
+        }
         await api('POST', `/api/hotels/${h.id}/checkin`, b);
       }, `Entrada registrada en la ${r.number}`);
     });
@@ -832,7 +843,8 @@ function roomSheet(h, r) {
     const isH = r.kind === 'hora';
     sheet(`<h3>Hab. ${esc(r.number)}${isH ? ' · por hora' : ''}</h3>
       <p><b>${esc(r.guest)}</b></p>
-      <p class="hint">Entró ${hnShort(r.check_in_at)} ${hnTime(r.check_in_at)} · ${isH ? 'Hasta las ' + hnTime(r.due_out_at) + ' (salida manual)' : 'Salida automática ' + hnDay(r.due_out_at) + ', ' + hnTime(r.due_out_at)}${r.pay ? ' · Pagó con ' + esc(r.pay) : ''}</p>
+      <p class="hint">Entró ${hnShort(r.check_in_at)} ${hnTime(r.check_in_at)} · ${isH ? 'Hasta las ' + hnTime(r.due_out_at) + ' (salida manual)' : 'Salida automática ' + hnDay(r.due_out_at) + ', ' + hnTime(r.due_out_at)}${r.pay === 'Pendiente' ? ' · Pago pendiente' : r.pay ? ' · Pagó con ' + esc(r.pay) : ''}</p>
+      ${accountBox(r)}
       ${r.pending_balance > 0 ? `<button class="btn" id="payNow">Debe ${fmt(r.pending_balance)} · Registrar pago</button>` : ''}
       ${extendForm(h, r, isH)}
       <div class="err" id="err"></div>
@@ -941,8 +953,8 @@ function extendAgainSheet(h, r) {
 
 // ---- Editar una estadía en curso: fechas (calendario) y forma de pago ----
 const EDIT_PAY = (h) => [...(me.pay_now || ['Efectivo', 'Tarjeta', 'Transferencia', 'PayPal']), ...(h.allow_po ? ['Orden de compra'] : [])];
-function payPicker(h, current) {
-  const opts = EDIT_PAY(h);
+function payPicker(h, current, withPending = false) {
+  const opts = [...EDIT_PAY(h), ...(withPending ? ['Pendiente'] : [])];
   return `<label>Forma de pago<select id="f-ep">${opts.map((m) => `<option ${m === current ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>
     <label id="g-epo" ${current === 'Orden de compra' ? '' : 'hidden'}>Número de orden de compra<input id="f-epo" autocomplete="off"></label>
     <label id="g-eusd" ${current === 'PayPal' ? '' : 'hidden'}>Total cobrado en dólares (US$)<input id="f-eusd" type="number" min="0" step="any" inputmode="decimal" placeholder="Ej. 120"></label>
@@ -971,7 +983,7 @@ function editStaySheet(h, r) {
   sheet(`<h3>Editar · Hab. ${esc(r.number)}</h3>
     <p><b>${esc(r.guest)}</b></p>
     ${isH ? '' : `<p class="hint">Toca el día de entrada y luego el de salida. Si cambian las noches, el cobro se ajusta solo.</p><div id="cale"></div><p class="hint" id="ecalc"></p>`}
-    ${canPay ? payPicker(h, r.pay) : r.pay === 'Pendiente' ? '<p class="hint">Pago pendiente: cuando pague, usa "Registrar pago" en la habitación.</p>' : ''}
+    ${canPay ? payPicker(h, r.pay, true) + '<p class="hint">Elige <b>Pendiente</b> si todavía no ha pagado: sale de la caja y luego se cobra con "Registrar pago".</p>' : r.pay === 'Pendiente' ? '<p class="hint">Pago pendiente: cuando pague, usa "Registrar pago" en la habitación.</p>' : ''}
     <div class="err" id="err"></div>
     <div class="row"><button class="btn ghost" id="c">Cancelar</button><button class="btn" id="ok">Guardar cambios</button></div>`, () => {
     $('c').onclick = () => roomSheet(h, r);
@@ -1079,6 +1091,21 @@ function dirtyBtn(h, label = 'Marcar como sucia') {
 }
 function bindDirty(h, r) {
   if ($('dirty')) $('dirty').onclick = (e) => act(e.target, () => api('POST', `/api/rooms/${r.id}/dirty`), `Hab. ${r.number} por limpiar · se avisó a limpieza`);
+}
+
+// ---- Cuenta del huésped a la fecha: noches que lleva vs. lo pagado ----
+function accountBox(r) {
+  if (r.kind !== 'noche' || r.stay_total == null || !r.nights) return '';
+  const so = r.nights_so_far || 0;
+  const perNight = r.stay_total / r.nights;
+  const dueToday = Math.round(so * perNight * 100) / 100;
+  const diff = Math.round((r.paid_total - dueToday) * 100) / 100;
+  const paidNights = perNight ? Math.floor((r.paid_total + 0.01) / perNight) : 0;
+  return `<div class="acct">
+    <div><span>Lleva</span><b>${so} de ${r.nights} noche${r.nights === 1 ? '' : 's'}</b><small>${fmt(dueToday)} a hoy</small></div>
+    <div><span>Pagado</span><b>${fmt(r.paid_total)}</b><small>${paidNights} noche${paidNights === 1 ? '' : 's'} de ${fmt(r.stay_total)}</small></div>
+    <div class="${diff < -0.009 ? 'owe' : 'ok'}"><span>${diff < -0.009 ? 'Debe a hoy' : 'Al día'}</span><b>${fmt(Math.abs(diff < -0.009 ? diff : r.stay_total - r.paid_total))}</b><small>${diff < -0.009 ? 'por noches ya pasadas' : r.stay_total - r.paid_total > 0.009 ? 'falta por noches que vienen' : 'todo pagado'}</small></div>
+  </div>`;
 }
 
 function extraSheet(h) {

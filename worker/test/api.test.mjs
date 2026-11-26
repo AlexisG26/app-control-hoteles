@@ -728,6 +728,40 @@ test('base de datos de clientes: se crean al registrar, se buscan, se editan y s
   assert.equal((await api('GET', '/api/hotels/prado/guests?q=ra', { token: limpia })).status, 403);
 });
 
+test('recepción registra a una huésped que entró días atrás (pendiente) y ve cuánto lleva pagado', async () => {
+  const today = localDate(env);
+  const room = await roomId('prado', '4');
+  // Entró hace 4 días, se va en 2 días: 6 noches pendientes de L 700
+  const r = await api('POST', '/api/hotels/prado/past-stay', { token: recep, body: { date: addDays(today, -4), room_id: room, guest: 'Clienta 508', nights: 6, rate: 700, pay: 'Pendiente' } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  let rm = (await api('GET', '/api/hotels/prado/rooms', { token: recep })).data.find((z) => z.id === room);
+  assert.equal(rm.status, 'ocupada');
+  assert.equal(rm.nights_so_far, 4);
+  assert.equal(rm.stay_total, 4200); assert.equal(rm.paid_total, 0); assert.equal(rm.pending_balance, 4200);
+  // Pagó 2 noches
+  const pend = (await api('GET', '/api/hotels/prado/pending', { token: recep })).data.find((x) => x.stay_id === rm.stay_id);
+  const pay = await form(`/api/sales/${pend.id}/payments`, recep, { pay: 'Efectivo', nights: '2' });
+  assert.equal(pay.status, 200, JSON.stringify(pay.data));
+  rm = (await api('GET', '/api/hotels/prado/rooms', { token: recep })).data.find((z) => z.id === room);
+  assert.equal(rm.paid_total, 1400); assert.equal(rm.pending_balance, 2800);
+  // Recepción no puede cargar reservas ya terminadas
+  const done = await api('POST', '/api/hotels/prado/past-stay', { token: recep, body: { date: addDays(today, -20), room_id: await roomId('prado', '5'), guest: 'Vieja', nights: 2, rate: 700, pay: 'Efectivo' } });
+  assert.equal(done.status, 403);
+  await api('POST', `/api/stays/${rm.stay_id}/checkout`, { token: recep });
+});
+
+test('cambiar a Pendiente un cobro que se registró pagado por error', async () => {
+  const room = await roomId('prado', '8');
+  await env.DB.prepare("UPDATE rooms SET status = 'libre', current_stay_id = NULL WHERE id = ?").bind(room).run();
+  const r = await api('POST', '/api/hotels/prado/checkin', { token: recep, body: { room_id: room, guest: 'Olvido', kind: 'noche', nights: 2, rate: 700, pay: 'Efectivo' } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const e = await api('PATCH', `/api/stays/${r.data.stay_id}`, { token: recep, body: { pay: 'Pendiente' } });
+  assert.equal(e.status, 200, JSON.stringify(e.data));
+  const rm = (await api('GET', '/api/hotels/prado/rooms', { token: recep })).data.find((z) => z.id === room);
+  assert.equal(rm.pay, 'Pendiente'); assert.equal(rm.pending_balance, 1400); assert.equal(rm.paid_total, 0);
+  await api('POST', `/api/stays/${r.data.stay_id}/checkout`, { token: recep });
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });
