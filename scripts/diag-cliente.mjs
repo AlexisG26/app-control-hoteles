@@ -2,7 +2,14 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 const db = new DatabaseSync(':memory:');
-db.exec(readFileSync(process.argv[2], 'utf8'));
+// La copia exportada puede traer índices antes que su tabla: se ejecuta por sentencia y se reintenta lo que falló.
+let pending = readFileSync(process.argv[2], 'utf8').split(/;\s*\n/).map((x) => x.trim()).filter(Boolean);
+for (let pass = 0; pass < 5 && pending.length; pass++) {
+  const failed = [];
+  for (const st of pending) { try { db.exec(st + ';'); } catch { failed.push(st); } }
+  pending = failed;
+}
+if (pending.length) console.log('sentencias sin aplicar:', pending.length);
 const off = -360 * 60000;
 const d = (ms) => (ms ? new Date(ms + off).toISOString().slice(0, 16).replace('T', ' ') : '—');
 const stays = db.prepare(`SELECT s.id, s.hotel_id, r.number, s.check_in_at, s.due_out_at, s.checked_out_at, s.checkout_mode, s.nights, s.rate, s.created_by IS NOT NULL AS en_app,
