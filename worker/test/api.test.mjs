@@ -772,7 +772,7 @@ test('comisiones: quien registra la reserva gana su comisión; solo gerencia y c
   await env.DB.prepare("UPDATE rooms SET status = 'libre', current_stay_id = NULL WHERE id = ?").bind(room).run();
   const a = await api('POST', '/api/hotels/prado/checkin', { token: recep, body: { room_id: room, guest: 'Con comisión', kind: 'noche', nights: 1, rate: 900, pay: 'Efectivo' } });
   assert.equal(a.status, 200, JSON.stringify(a.data));
-  await api('POST', `/api/stays/${a.data.stay_id}/extend`, { token: recep, body: { nights: 1, rate: 900, pay: 'Efectivo' } }); // extender no suma comisión
+  await api('POST', `/api/stays/${a.data.stay_id}/extend`, { token: recep, body: { nights: 1, rate: 900, pay: 'Efectivo' } }); // la extensión también suma comisión
   // Reserva que registra otra persona: sin comisión para recepción
   await api('POST', `/api/stays/${a.data.stay_id}/checkout`, { token: recep });
   await env.DB.prepare("UPDATE rooms SET status = 'libre' WHERE id = ?").bind(room).run();
@@ -785,16 +785,17 @@ test('comisiones: quien registra la reserva gana su comisión; solo gerencia y c
   const rep = await api('GET', `/api/commissions?month=${month}`, { token: owner });
   assert.equal(rep.status, 200, JSON.stringify(rep.data));
   const p = rep.data.people.find((x) => x.user_id === recId && x.hotel_id === 'prado');
-  assert.equal(p.count, 1); assert.equal(p.total, 150); assert.equal(p.items[0].guest, 'Con comisión');
+  assert.equal(p.count, 2); assert.equal(p.total, 300); assert.equal(p.items[0].guest, 'Con comisión');
+  assert.equal(p.items[0].extension, false); assert.equal(p.items[1].extension, true);
   // Contabilidad lo ve por hotel y puede marcarlo pagado; recepción y limpieza no
   assert.equal((await api('GET', `/api/commissions?month=${month}&hotel=prado`, { token: conta })).status, 200);
   assert.equal((await api('GET', `/api/commissions?month=${month}`, { token: conta })).status, 400);
   assert.equal((await api('GET', `/api/commissions?month=${month}&hotel=prado`, { token: recep })).status, 403);
   assert.equal((await api('GET', `/api/commissions?month=${month}&hotel=prado`, { token: limpia })).status, 403);
   assert.equal((await api('POST', '/api/commissions/paid', { token: recep, body: { hotel_id: 'prado', user_id: recId, month, amount: 150 } })).status, 403);
-  assert.equal((await api('POST', '/api/commissions/paid', { token: conta, body: { hotel_id: 'prado', user_id: recId, month, amount: 150 } })).status, 200);
+  assert.equal((await api('POST', '/api/commissions/paid', { token: conta, body: { hotel_id: 'prado', user_id: recId, month, amount: 300 } })).status, 200);
   const rep2 = await api('GET', `/api/commissions?month=${month}&hotel=prado`, { token: conta });
-  assert.equal(rep2.data.people.find((x) => x.user_id === recId).paid.amount, 150);
+  assert.equal(rep2.data.people.find((x) => x.user_id === recId).paid.amount, 300);
   assert.equal(rep2.data.to_pay, 0);
   // Recepción no ve la comisión en las habitaciones
   const rooms = await api('GET', '/api/hotels/prado/rooms', { token: recep });

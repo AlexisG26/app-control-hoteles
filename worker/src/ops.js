@@ -161,6 +161,8 @@ async function addSale(env, user, hotel, s) {
   ).bind(hotel.id, s.local_date ?? localDate(env, now), now, s.concept, s.room ?? null, s.stay_id ?? null, s.kind,
     s.nights || 0, s.hours || 0, s.amount, s.pay, s.po ?? null, user.id, s.parent_id ?? null, s.proof_key ?? null, s.paid_nights || 0, s.room_type ?? null, s.company ?? null).run();
   const id = r.meta.last_row_id;
+  // Comisión: cada cobro de hospedaje (entrada o extensión) para quien lo registra, si tiene comisión en el hotel
+  if ((s.kind === 'hospedaje' || s.kind === 'hora') && !s.parent_id && user?.id) await applyCommission(env, id, hotel.id, user.id);
   // PayPal en dólares: los lempiras salen de la tasa del día siguiente (los pagos de pendientes se quedan en lempiras)
   if (s.pay === 'PayPal' && s.usd > 0 && s.kind !== 'abono') await applyUsd(env, id, s.local_date ?? localDate(env, now), s.usd);
   return id;
@@ -249,7 +251,6 @@ export async function checkIn(env, user, hotelId, b) {
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).bind(hotel.id, room.id, guest, kind, now, due, nights, hours, rate, user.id, roomType, company, guestId).run();
   const stayId = st.meta.last_row_id;
-  await applyCommission(env, stayId, hotel.id, user.id);
   // Ocupar la habitación solo si sigue libre (evita dos entradas simultáneas).
   const upd = await env.DB.prepare(`UPDATE rooms SET status='ocupada', current_stay_id=?, updated_at=?, updated_by=? WHERE id=? AND status='libre'`)
     .bind(stayId, now, user.id, room.id).run();
@@ -418,7 +419,6 @@ export async function pastStay(env, user, hotelId, b) {
      VALUES (?,?,?,'noche',?,?,?,0,?,?,?,?,?,?,?)`,
   ).bind(hotel.id, room.id, guest, checkIn, due, nights, rate, user.id, roomType, company, ongoing ? null : due, ongoing ? null : 'historico', guestId).run();
   const stayId = st.meta.last_row_id;
-  await applyCommission(env, stayId, hotel.id, user.id);
   if (ongoing) {
     await env.DB.prepare(`UPDATE rooms SET status='ocupada', current_stay_id=?, updated_at=?, updated_by=? WHERE id=? AND status='libre'`)
       .bind(stayId, now, user.id, room.id).run();
