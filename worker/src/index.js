@@ -11,6 +11,7 @@ import {
 import { runScheduled } from './cron.js';
 import { listHistory, historyDetail } from './history.js';
 import { listGuests, guestDetail, updateGuest, mergeGuest, searchGuests } from './guests.js';
+import { commissionReport, setCommissionRule, setCommissionPaid } from './commissions.js';
 import { handleMcp } from './mcp.js';
 import { notify } from './notify.js';
 
@@ -178,6 +179,11 @@ on('GET', '/api/guests/:id', async ({ env, user, p }) => json(await guestDetail(
 on('PATCH', '/api/guests/:id', async ({ req, env, user, p }) => json(await updateGuest(env, user, p.id, await body(req))));
 on('POST', '/api/guests/:id/merge', async ({ req, env, user, p }) => json(await mergeGuest(env, user, p.id, await body(req))));
 on('GET', '/api/hotels/:hotel/guests', async ({ env, user, p, url }) => json(await searchGuests(env, user, p.hotel, url.searchParams)));
+
+// ---------- Comisiones por reserva (gerencia y contabilidad) ----------
+on('GET', '/api/commissions', async ({ env, user, url }) => json(await commissionReport(env, user, url.searchParams)));
+on('POST', '/api/commissions/rules', async ({ req, env, user }) => json(await setCommissionRule(env, user, await body(req))));
+on('POST', '/api/commissions/paid', async ({ req, env, user }) => json(await setCommissionPaid(env, user, await body(req))));
 
 // ---------- Usuarios (solo el dueño) ----------
 on('GET', '/api/users', async ({ env, user }) => {

@@ -361,3 +361,9 @@ fieldset.panel { margin: 0; }
 .acct small { font-size: 12px; color: var(--muted); }
 .acct .owe { background: color-mix(in srgb, var(--occ) 14%, var(--card)); }
 .acct .owe b { color: var(--occ); }
+
+/* Comisiones */
+.monthnav { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0 12px; font-size: 18px; }
+.list.comm details { margin-top: 6px; }
+.list.comm summary { cursor: pointer; color: var(--accent, var(--fg)); font-size: 14px; }
+.list.mini li { padding: 6px 0; font-size: 14px; }

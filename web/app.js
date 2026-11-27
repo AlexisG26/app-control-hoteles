@@ -123,6 +123,7 @@ async function render() {
     if (r.name === 'usuarios' && me.user.is_owner) return await viewUsuarios();
     if (r.name === 'historial' && me.user.is_owner) return await viewHistorial();
     if (r.name === 'clientes' && me.user.is_owner) return await viewClientes();
+    if (r.name === 'comisiones' && me.user.is_owner) return await viewComisiones();
     go(homeRoute());
   } catch (e) {
     app.innerHTML = header() + errorBox(e.message);
@@ -454,6 +455,7 @@ async function viewFinanzas() {
   const kindLabel = { hospedaje: 'Por noche', hora: 'Por hora', extra: 'Extras', abono: 'Pagos de pendientes' };
 
   app.innerHTML = header({ global: true, view: '#/finanzas', title: 'Gerencia' }) + `
+    <a class="btn ghost" href="#/comisiones" style="margin-bottom:10px">Comisiones de reservas →</a>
     <div class="seg period" role="group" aria-label="Período">${PERIODS.map(([k, l]) => `<button aria-pressed="${pk === k}" data-period="${k}">${l}</button>`).join('')}</div>
     <section class="panel hero">
       <span class="eyebrow">Total de los hoteles · ${esc(rangeTxt)}</span>
@@ -1224,6 +1226,7 @@ async function viewContabilidad(h) {
     h.allow_po ? api('GET', `/api/hotels/${h.id}/po`) : Promise.resolve([]),
     api('GET', `/api/hotels/${h.id}/pending`),
   ]);
+  const comm = await api('GET', `/api/commissions?hotel=${h.id}&month=${today.slice(0, 7)}`).catch(() => null);
   const days = [...Array(7)].map((_, i) => addDays(wk, i));
   const live = sales.filter((s) => !s.voided_at && s.pay !== 'Pendiente'); // dinero recibido
   const pays = me.pay.filter((p) => p !== 'Pendiente' && (p !== 'Orden de compra' || h.allow_po));
@@ -1256,6 +1259,7 @@ async function viewContabilidad(h) {
         <div><span>Turismo ${fin.taxes.tourism_pct}%</span><b>${fmt2(fin.taxes.tourism)}</b></div></div>
     </section>` : ''}
     ${paypalPanel(fin.paypal)}
+    ${comm && comm.people.length ? `<section class="panel"><div class="sec-head"><h2>Comisiones de ${monthName(comm.month)}</h2><b>${fmt(comm.to_pay)} por pagar</b></div>${commissionCards(comm, false)}</section>` : ''}
     ${fin.by_company.length ? `<section class="panel"><h2>Por empresa</h2><ul class="list">${fin.by_company.map((c) => `<li><div class="d">${esc(c.k)}<small>${c.nights} noche${c.nights === 1 ? '' : 's'} · ${c.n} registro${c.n > 1 ? 's' : ''}</small></div><span class="m">${fmt(c.t)}</span><span></span></li>`).join('')}</ul></section>` : ''}
     ${pendingPanel(pending)}
     ${h.allow_po ? `<section class="panel">
@@ -1294,6 +1298,7 @@ async function viewContabilidad(h) {
   $('past').onclick = () => pastStaySheet(h);
   bindVoid(h);
   bindPaypal(fin.paypal);
+  if (comm) bindCommissionCards(comm, () => viewContabilidad(h));
   $('csv').onclick = () => {
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const rows = [['Hotel', 'Fecha', 'Hora', 'Concepto', 'Habitación', 'Noches', 'Horas', 'Forma de pago', 'Orden de compra', 'Monto', 'Registrado por', 'Estado', 'Motivo anulación']]
@@ -1638,6 +1643,68 @@ async function guestSheet(id) {
       }, 300);
     };
   });
+}
+
+// ---------------- Comisiones por reserva (solo gerencia y contabilidad) ----------------
+const monthName = (m) => { const [y, mo] = m.split('-').map(Number); return `${MONTHS_LONG[mo - 1]} ${y}`; };
+const MONTHS_LONG = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const shiftMonth = (m, k) => { let [y, mo] = m.split('-').map(Number); mo += k; while (mo < 1) { mo += 12; y--; } while (mo > 12) { mo -= 12; y++; } return `${y}-${String(mo).padStart(2, '0')}`; };
+function commissionCards(d, showHotel) {
+  return `<ul class="list comm">${d.people.map((p, i) => {
+    const owe = Math.max(0, p.total - (p.paid?.amount || 0));
+    const state = !p.total ? '<span class="tag">Sin reservas</span>' : p.paid && owe < 0.01 ? '<span class="tag t-ok">Pagado</span>' : p.paid ? `<span class="tag t-warn">Falta ${fmt(owe)}</span>` : '<span class="tag t-warn">Por pagar</span>';
+    return `<li><div class="d"><b>${esc(p.name)}</b> ${state}
+      <small>${showHotel ? esc(p.hotel_name.replace('Hostal ', '')) + ' · ' : ''}${p.count} reserva${p.count === 1 ? '' : 's'}${p.rate ? ` × ${fmt(p.rate)}` : ''}${p.paid ? ` · pagado ${fmt(p.paid.amount)} el ${hnShort(p.paid.paid_at)}` : ''}</small>
+      ${p.items.length ? `<details><summary>Ver reservas</summary><ul class="list mini">${p.items.map((it) => `<li><div class="d">${hnShort(parseD(it.date))} · Hab. ${esc(it.room)} · ${esc(it.guest)}<small>${it.kind === 'hora' ? 'por hora' : it.nights + ' noche' + (it.nights === 1 ? '' : 's')} · vendió ${fmt(it.sale_total)}${it.open ? ' · hospedado' : ''}</small></div><span class="m">${fmt(it.amount)}</span></li>`).join('')}</ul></details>` : ''}
+      ${p.total ? `<div class="row" style="margin-top:6px">${owe >= 0.01 ? `<button class="btn small" data-cpay="${i}">Marcar pagado ${fmt(p.total)}</button>` : ''}${p.paid ? `<button class="btn ghost small" data-cundo="${i}">Deshacer pago</button>` : ''}</div>` : ''}</div>
+      <span class="m">${fmt(p.total)}</span></li>`;
+  }).join('')}</ul>`;
+}
+function bindCommissionCards(d, reload) {
+  app.querySelectorAll('[data-cpay]').forEach((b) => {
+    b.onclick = (e) => { const p = d.people[+b.dataset.cpay]; act(e.target, () => api('POST', '/api/commissions/paid', { hotel_id: p.hotel_id, user_id: p.user_id, month: d.month, amount: p.total }).then(reload), `Comisión de ${p.name} marcada como pagada`); };
+  });
+  app.querySelectorAll('[data-cundo]').forEach((b) => {
+    b.onclick = (e) => { const p = d.people[+b.dataset.cundo]; act(e.target, () => api('POST', '/api/commissions/paid', { hotel_id: p.hotel_id, user_id: p.user_id, month: d.month, paid: false }).then(reload), 'Pago deshecho'); };
+  });
+}
+async function viewComisiones() {
+  const month = LS.get('ch-comm-month', hnDate().slice(0, 7));
+  const [d, users] = await Promise.all([api('GET', '/api/commissions?month=' + month), api('GET', '/api/users')]);
+  const cur = hnDate().slice(0, 7);
+  app.innerHTML = header({ global: true, view: '#/finanzas', title: 'Gerencia' }) + `
+    <a class="btn ghost small" href="#/finanzas">← Finanzas</a>
+    <h1 class="page-title">Comisiones de reservas</h1>
+    <div class="monthnav"><button class="btn ghost small" id="mprev" aria-label="Mes anterior">‹</button><b style="text-transform:capitalize">${monthName(month)}</b><button class="btn ghost small" id="mnext" aria-label="Mes siguiente" ${month >= cur ? 'disabled' : ''}>›</button></div>
+    <section class="panel"><div class="kpis">
+      <div><span>Comisiones del mes</span><b>${fmt(d.total)}</b></div>
+      <div><span>Por pagar</span><b>${fmt(d.to_pay)}</b></div>
+      <div><span>Reservas</span><b>${d.people.reduce((a, p) => a + p.count, 0)}</b></div>
+    </div><p class="hint">Gana comisión quien registra la reserva en la app. Extensiones y reservas canceladas no cuentan. Solo gerencia y contabilidad ven esto.</p></section>
+    <section class="panel"><h2>A pagar por persona</h2>${d.people.length ? commissionCards(d, true) : '<p class="hint">Nadie tiene comisión configurada.</p>'}</section>
+    <section class="panel"><h2>Quién gana comisión</h2>
+      <ul class="list">${d.rules.map((r) => `<li><div class="d">${esc(r.name)}<small>${esc(r.hotel_name)} · por cada reserva que registra</small></div>
+        <span class="acts"><input type="number" min="0" step="any" inputmode="decimal" value="${r.amount}" data-ramt="${r.hotel_id}|${r.user_id}" style="width:90px"><button class="mini" data-rsave="${r.hotel_id}|${r.user_id}">Guardar</button><button class="mini" data-rdel="${r.hotel_id}|${r.user_id}">Quitar</button></span></li>`).join('') || '<li><div class="d">Nadie todavía</div></li>'}</ul>
+      <h3 style="font-size:16px;margin-top:10px">Agregar persona</h3>
+      <div class="row"><label>Hotel<select id="r-h">${me.hotels.map((h) => `<option value="${h.id}">${esc(h.name)}</option>`).join('')}</select></label>
+        <label>Persona<select id="r-u"></select></label></div>
+      <div class="row"><label>Comisión por reserva (L)<input id="r-a" type="number" min="1" step="any" inputmode="decimal" placeholder="Ej. 100"></label><button class="btn" id="r-add" style="align-self:end">Agregar</button></div>
+      <p class="hint">Los cambios aplican a las reservas nuevas; lo ya ganado no cambia.</p>
+      <div class="err" id="err"></div>
+    </section>`;
+  const fillUsers = () => {
+    const hid = $('r-h').value;
+    $('r-u').innerHTML = users.filter((u) => u.active && u.memberships.some((m) => m.hotel_id === hid)).map((u) => `<option value="${u.id}">${esc(u.name)}</option>`).join('');
+  };
+  $('r-h').onchange = fillUsers; fillUsers();
+  const go2 = (m) => { LS.set('ch-comm-month', m); viewComisiones(); };
+  $('mprev').onclick = () => go2(shiftMonth(month, -1));
+  $('mnext').onclick = () => go2(shiftMonth(month, 1));
+  bindCommissionCards(d, viewComisiones);
+  const rule = (hid, uid, amount, msg) => api('POST', '/api/commissions/rules', { hotel_id: hid, user_id: +uid, amount }).then(() => { toast(msg); viewComisiones(); }).catch((e) => { $('err').textContent = e.message; });
+  app.querySelectorAll('[data-rsave]').forEach((b) => { b.onclick = () => { const [hid, uid] = b.dataset.rsave.split('|'); rule(hid, uid, +app.querySelector(`[data-ramt="${b.dataset.rsave}"]`).value, 'Comisión guardada'); }; });
+  app.querySelectorAll('[data-rdel]').forEach((b) => { b.onclick = () => { const [hid, uid] = b.dataset.rdel.split('|'); rule(hid, uid, 0, 'Comisión quitada'); }; });
+  $('r-add').onclick = () => { if (!$('r-u').value) { $('err').textContent = 'Elige la persona.'; return; } if (!(+$('r-a').value > 0)) { $('err').textContent = 'Escribe la comisión.'; return; } rule($('r-h').value, $('r-u').value, +$('r-a').value, 'Comisión agregada'); };
 }
 
 async function viewUsuarios() {

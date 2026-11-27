@@ -762,6 +762,46 @@ test('cambiar a Pendiente un cobro que se registró pagado por error', async () 
   await api('POST', `/api/stays/${r.data.stay_id}/checkout`, { token: recep });
 });
 
+test('comisiones: quien registra la reserva gana su comisión; solo gerencia y contabilidad lo ven', async () => {
+  const month = localDate(env).slice(0, 7);
+  const recId = (await env.DB.prepare("SELECT id FROM users WHERE email = 'rec@example.com'").first()).id;
+  // Solo gerencia define quién gana comisión
+  assert.equal((await api('POST', '/api/commissions/rules', { token: conta, body: { hotel_id: 'prado', user_id: recId, amount: 150 } })).status, 403);
+  assert.equal((await api('POST', '/api/commissions/rules', { token: owner, body: { hotel_id: 'prado', user_id: recId, amount: 150 } })).status, 200);
+  const room = await roomId('prado', '1');
+  await env.DB.prepare("UPDATE rooms SET status = 'libre', current_stay_id = NULL WHERE id = ?").bind(room).run();
+  const a = await api('POST', '/api/hotels/prado/checkin', { token: recep, body: { room_id: room, guest: 'Con comisión', kind: 'noche', nights: 1, rate: 900, pay: 'Efectivo' } });
+  assert.equal(a.status, 200, JSON.stringify(a.data));
+  await api('POST', `/api/stays/${a.data.stay_id}/extend`, { token: recep, body: { nights: 1, rate: 900, pay: 'Efectivo' } }); // extender no suma comisión
+  // Reserva que registra otra persona: sin comisión para recepción
+  await api('POST', `/api/stays/${a.data.stay_id}/checkout`, { token: recep });
+  await env.DB.prepare("UPDATE rooms SET status = 'libre' WHERE id = ?").bind(room).run();
+  const b = await api('POST', '/api/hotels/prado/checkin', { token: owner, body: { room_id: room, guest: 'Sin comisión', kind: 'noche', nights: 1, rate: 900, pay: 'Efectivo' } });
+  await api('POST', `/api/stays/${b.data.stay_id}/cancel`, { token: owner, body: { reason: 'prueba' } });
+  // Una cancelada no cuenta
+  await env.DB.prepare("UPDATE rooms SET status = 'libre', current_stay_id = NULL WHERE id = ?").bind(room).run();
+  const c = await api('POST', '/api/hotels/prado/checkin', { token: recep, body: { room_id: room, guest: 'Cancelada', kind: 'noche', nights: 1, rate: 900, pay: 'Efectivo' } });
+  await api('POST', `/api/stays/${c.data.stay_id}/cancel`, { token: recep, body: { reason: 'prueba' } });
+  const rep = await api('GET', `/api/commissions?month=${month}`, { token: owner });
+  assert.equal(rep.status, 200, JSON.stringify(rep.data));
+  const p = rep.data.people.find((x) => x.user_id === recId && x.hotel_id === 'prado');
+  assert.equal(p.count, 1); assert.equal(p.total, 150); assert.equal(p.items[0].guest, 'Con comisión');
+  // Contabilidad lo ve por hotel y puede marcarlo pagado; recepción y limpieza no
+  assert.equal((await api('GET', `/api/commissions?month=${month}&hotel=prado`, { token: conta })).status, 200);
+  assert.equal((await api('GET', `/api/commissions?month=${month}`, { token: conta })).status, 400);
+  assert.equal((await api('GET', `/api/commissions?month=${month}&hotel=prado`, { token: recep })).status, 403);
+  assert.equal((await api('GET', `/api/commissions?month=${month}&hotel=prado`, { token: limpia })).status, 403);
+  assert.equal((await api('POST', '/api/commissions/paid', { token: recep, body: { hotel_id: 'prado', user_id: recId, month, amount: 150 } })).status, 403);
+  assert.equal((await api('POST', '/api/commissions/paid', { token: conta, body: { hotel_id: 'prado', user_id: recId, month, amount: 150 } })).status, 200);
+  const rep2 = await api('GET', `/api/commissions?month=${month}&hotel=prado`, { token: conta });
+  assert.equal(rep2.data.people.find((x) => x.user_id === recId).paid.amount, 150);
+  assert.equal(rep2.data.to_pay, 0);
+  // Recepción no ve la comisión en las habitaciones
+  const rooms = await api('GET', '/api/hotels/prado/rooms', { token: recep });
+  assert.ok(!JSON.stringify(rooms.data).includes('commission'));
+  await api('POST', '/api/commissions/rules', { token: owner, body: { hotel_id: 'prado', user_id: recId, amount: 0 } });
+});
+
 test('desactivar un usuario cierra sus sesiones', async () => {
   const u = (await api('GET', '/api/users', { token: owner })).data.find((x) => x.email === 'rec@example.com');
   await api('PATCH', `/api/users/${u.id}`, { token: owner, body: { active: false } });
