@@ -2,11 +2,13 @@
 import { bad, notFound, money, localDate } from './util.js';
 import { requireOwner, requireRole, can } from './auth.js';
 
-/** Al registrar un cobro de hospedaje (entrada o extensión): si quien lo registra tiene comisión en ese hotel, queda guardada en el cobro. */
+/** Al registrar un cobro de hospedaje (entrada o extensión): si quien lo registra tiene comisión en ese hotel, queda guardada en el cobro (por noche). */
 export async function applyCommission(env, saleId, hotelId, userId) {
   const r = await env.DB.prepare('SELECT amount FROM commission_rules WHERE hotel_id = ? AND user_id = ?').bind(hotelId, userId).first();
   if (!r || !(r.amount > 0)) return;
-  await env.DB.prepare('UPDATE sales SET commission_user_id = ?, commission_amount = ? WHERE id = ? AND commission_user_id IS NULL').bind(userId, r.amount, saleId).run();
+  // Por noche: tarifa × noches del cobro (un cobro por horas cuenta como 1)
+  await env.DB.prepare('UPDATE sales SET commission_user_id = ?, commission_rate = ?, commission_amount = ? * MAX(COALESCE(nights, 0), 1) WHERE id = ? AND commission_user_id IS NULL')
+    .bind(userId, r.amount, r.amount, saleId).run();
 }
 
 const monthOk = (m) => /^\d{4}-(0[1-9]|1[0-2])$/.test(m || '');
@@ -28,7 +30,7 @@ export async function commissionReport(env, user, q) {
        JOIN users u ON u.id = c.user_id JOIN hotels h ON h.id = c.hotel_id WHERE u.deleted_at IS NULL ${onlyHotel ? 'AND c.hotel_id = ?' : ''} ORDER BY h.name, u.name`,
   ).bind(...(onlyHotel ? [onlyHotel] : [])).all();
   const { results: items } = await env.DB.prepare(
-    `SELECT x.id AS sale_id, x.stay_id, x.hotel_id, h.name AS hotel_name, x.commission_user_id AS user_id, u.name, x.commission_amount AS amount,
+    `SELECT x.id AS sale_id, x.stay_id, x.hotel_id, h.name AS hotel_name, x.commission_user_id AS user_id, u.name, x.commission_amount AS amount, x.commission_rate AS rate,
             r.number AS room, COALESCE(st.guest, x.concept) AS guest, x.local_date, x.nights, x.kind, x.amount AS sale_total,
             st.checked_out_at, (x.id <> (SELECT MIN(y.id) FROM sales y WHERE y.stay_id = x.stay_id AND y.kind IN ('hospedaje','hora'))) AS is_ext
        FROM sales x JOIN hotels h ON h.id = x.hotel_id LEFT JOIN users u ON u.id = x.commission_user_id
@@ -39,13 +41,13 @@ export async function commissionReport(env, user, q) {
   const { results: payouts } = await env.DB.prepare('SELECT * FROM commission_payouts WHERE month = ?').bind(month).all();
   const people = new Map();
   const key = (h, u) => `${h}|${u}`;
-  for (const r of rules) people.set(key(r.hotel_id, r.user_id), { hotel_id: r.hotel_id, hotel_name: r.hotel_name, user_id: r.user_id, name: r.name, rate: r.amount, count: 0, total: 0, sales: 0, items: [] });
+  for (const r of rules) people.set(key(r.hotel_id, r.user_id), { hotel_id: r.hotel_id, hotel_name: r.hotel_name, user_id: r.user_id, name: r.name, rate: r.amount, count: 0, nights: 0, total: 0, sales: 0, items: [] });
   for (const it of items) {
     const k = key(it.hotel_id, it.user_id);
-    if (!people.has(k)) people.set(k, { hotel_id: it.hotel_id, hotel_name: it.hotel_name, user_id: it.user_id, name: it.name || 'Usuario eliminado', rate: null, count: 0, total: 0, sales: 0, items: [] });
+    if (!people.has(k)) people.set(k, { hotel_id: it.hotel_id, hotel_name: it.hotel_name, user_id: it.user_id, name: it.name || 'Usuario eliminado', rate: null, count: 0, nights: 0, total: 0, sales: 0, items: [] });
     const p = people.get(k);
-    p.count++; p.total += it.amount; p.sales += it.sale_total;
-    p.items.push({ sale_id: it.sale_id, stay_id: it.stay_id, date: it.local_date, room: it.room, guest: it.guest, nights: it.nights, kind: it.kind, amount: it.amount, sale_total: it.sale_total, open: it.stay_id && !it.checked_out_at, extension: !!it.is_ext });
+    p.count++; p.nights += Math.max(it.nights || 0, 1); p.total += it.amount; p.sales += it.sale_total;
+    p.items.push({ sale_id: it.sale_id, stay_id: it.stay_id, date: it.local_date, room: it.room, guest: it.guest, nights: it.nights, kind: it.kind, amount: it.amount, rate: it.rate, sale_total: it.sale_total, open: it.stay_id && !it.checked_out_at, extension: !!it.is_ext });
   }
   for (const p of people.values()) {
     const po = payouts.find((x) => x.hotel_id === p.hotel_id && x.user_id === p.user_id);

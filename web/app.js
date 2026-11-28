@@ -1668,8 +1668,8 @@ function commissionCards(d, showHotel) {
     const owe = Math.max(0, p.total - (p.paid?.amount || 0));
     const state = !p.total ? '<span class="tag">Sin reservas</span>' : p.paid && owe < 0.01 ? '<span class="tag t-ok">Pagado</span>' : p.paid ? `<span class="tag t-warn">Falta ${fmt(owe)}</span>` : '<span class="tag t-warn">Por pagar</span>';
     return `<li><div class="d"><b>${esc(p.name)}</b> ${state}
-      <small>${showHotel ? esc(p.hotel_name.replace('Hostal ', '')) + ' · ' : ''}${p.count} reserva${p.count === 1 ? '' : 's'}${p.rate ? ` × ${fmt(p.rate)}` : ''}${p.paid ? ` · pagado ${fmt(p.paid.amount)} el ${hnShort(p.paid.paid_at)}` : ''}</small>
-      ${p.items.length ? `<details><summary>Ver reservas</summary><ul class="list mini">${p.items.map((it) => `<li><div class="d">${hnShort(parseD(it.date))} · Hab. ${esc(it.room || '—')} · ${esc(it.guest)}${it.extension ? ' <span class="tag">Extensión</span>' : ''}<small>${it.kind === 'hora' ? 'por hora' : it.nights + ' noche' + (it.nights === 1 ? '' : 's')} · vendió ${fmt(it.sale_total)}${it.open ? ' · hospedado' : ''}</small></div><span class="m">${fmt(it.amount)}</span></li>`).join('')}</ul></details>` : ''}
+      <small>${showHotel ? esc(p.hotel_name.replace('Hostal ', '')) + ' · ' : ''}${p.count} reserva${p.count === 1 ? '' : 's'} · ${p.nights} noche${p.nights === 1 ? '' : 's'}${p.rate ? ` × ${fmt(p.rate)}` : ''}${p.paid ? ` · pagado ${fmt(p.paid.amount)} el ${hnShort(p.paid.paid_at)}` : ''}</small>
+      ${p.items.length ? `<details><summary>Ver reservas</summary><ul class="list mini">${p.items.map((it) => `<li><div class="d">${hnShort(parseD(it.date))} · Hab. ${esc(it.room || '—')} · ${esc(it.guest)}${it.extension ? ' <span class="tag">Extensión</span>' : ''}<small>${it.kind === 'hora' ? 'por hora' : it.nights + ' noche' + (it.nights === 1 ? '' : 's')}${it.rate ? ` × ${fmt(it.rate)}` : ''} · vendió ${fmt(it.sale_total)}${it.open ? ' · hospedado' : ''}</small></div><span class="m">${fmt(it.amount)}</span></li>`).join('')}</ul></details>` : ''}
       ${p.total ? `<div class="row" style="margin-top:6px">${owe >= 0.01 ? `<button class="btn small" data-cpay="${i}">Marcar pagado ${fmt(p.total)}</button>` : ''}${p.paid ? `<button class="btn ghost small" data-cundo="${i}">Deshacer pago</button>` : ''}</div>` : ''}</div>
       <span class="m">${fmt(p.total)}</span></li>`;
   }).join('')}</ul>`;
@@ -1694,15 +1694,15 @@ async function viewComisiones() {
       <div><span>Comisiones del mes</span><b>${fmt(d.total)}</b></div>
       <div><span>Por pagar</span><b>${fmt(d.to_pay)}</b></div>
       <div><span>Reservas</span><b>${d.people.reduce((a, p) => a + p.count, 0)}</b></div>
-    </div><p class="hint">Gana comisión quien registra en la app cada reserva y cada extensión. Las canceladas o anuladas no cuentan. Solo gerencia y contabilidad ven esto.</p></section>
+    </div><p class="hint">Gana comisión quien registra en la app cada reserva y cada extensión, por cada noche. Las canceladas o anuladas no cuentan. Solo gerencia y contabilidad ven esto.</p></section>
     <section class="panel"><h2>A pagar por persona</h2>${d.people.length ? commissionCards(d, true) : '<p class="hint">Nadie tiene comisión configurada.</p>'}</section>
     <section class="panel"><h2>Quién gana comisión</h2>
-      <ul class="list">${d.rules.map((r) => `<li><div class="d">${esc(r.name)}<small>${esc(r.hotel_name)} · por cada reserva o extensión que registra</small></div>
+      <ul class="list">${d.rules.map((r) => `<li><div class="d">${esc(r.name)}<small>${esc(r.hotel_name)} · por noche, en cada reserva o extensión que registra</small></div>
         <span class="acts"><input type="number" min="0" step="any" inputmode="decimal" value="${r.amount}" data-ramt="${r.hotel_id}|${r.user_id}" style="width:90px"><button class="mini" data-rsave="${r.hotel_id}|${r.user_id}">Guardar</button><button class="mini" data-rdel="${r.hotel_id}|${r.user_id}">Quitar</button></span></li>`).join('') || '<li><div class="d">Nadie todavía</div></li>'}</ul>
       <h3 style="font-size:16px;margin-top:10px">Agregar persona</h3>
       <div class="row"><label>Hotel<select id="r-h">${me.hotels.map((h) => `<option value="${h.id}">${esc(h.name)}</option>`).join('')}</select></label>
         <label>Persona<select id="r-u"></select></label></div>
-      <div class="row"><label>Comisión por reserva o extensión (L)<input id="r-a" type="number" min="1" step="any" inputmode="decimal" placeholder="Ej. 100"></label><button class="btn" id="r-add" style="align-self:end">Agregar</button></div>
+      <div class="row"><label>Comisión por noche (L)<input id="r-a" type="number" min="1" step="any" inputmode="decimal" placeholder="Ej. 100"></label><button class="btn" id="r-add" style="align-self:end">Agregar</button></div>
       <p class="hint">Los cambios aplican a las reservas nuevas; lo ya ganado no cambia.</p>
       <div class="err" id="err"></div>
     </section>`;

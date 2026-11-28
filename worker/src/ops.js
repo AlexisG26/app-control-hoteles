@@ -648,7 +648,8 @@ async function resizeSale(env, x, n, fallbackRate) {
   if (x.pay === 'Pendiente' && x.paid_amount > amt + 0.009) throw bad('Ya se pagaron más noches de las que quedarían. Revisa los pagos primero.');
   const settled = x.pay === 'Pendiente' ? (x.paid_amount >= amt - 0.009 ? (x.settled_at || Date.now()) : null) : x.settled_at;
   const usd = x.usd_amount != null && x.nights ? Math.round((x.usd_amount / x.nights) * n * 100) / 100 : x.usd_amount;
-  await env.DB.prepare('UPDATE sales SET nights = ?, amount = ?, settled_at = ?, usd_amount = ? WHERE id = ?').bind(n, amt, settled, usd, x.id).run();
+  await env.DB.prepare('UPDATE sales SET nights = ?, amount = ?, settled_at = ?, usd_amount = ?, commission_amount = CASE WHEN commission_rate IS NULL THEN commission_amount ELSE commission_rate * MAX(?, 1) END WHERE id = ?')
+    .bind(n, amt, settled, usd, n, x.id).run();
   return amt - x.amount;
 }
 
