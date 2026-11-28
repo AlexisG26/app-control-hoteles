@@ -185,7 +185,16 @@ function header(current = {}) {
     </header>
     ${nav}`;
 }
+// Apariencia (claro / oscuro / automático): solo cambia colores
+function applyTheme(t) {
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+  const dark = t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => { m.setAttribute('content', dark ? '#000000' : '#f2f2f7'); m.removeAttribute('media'); });
+}
+applyTheme(LS.get('ch-theme', 'auto'));
 document.addEventListener('click', (e) => {
+  const tp = e.target.closest('[data-theme-pick]');
+  if (tp) { LS.set('ch-theme', tp.dataset.themePick); applyTheme(tp.dataset.themePick); document.querySelectorAll('[data-theme-pick]').forEach((b) => b.setAttribute('aria-pressed', String(b === tp))); return; }
   const g = e.target.closest('[data-go]');
   if (g) { e.preventDefault(); go(g.dataset.go); }
 });
@@ -1375,6 +1384,11 @@ async function viewAjustes() {
       <h2>${esc(me.user.name)}</h2>
       <p class="hint">${esc(me.user.email)}${me.user.is_owner ? ' · Dueño' : ''}</p>
       <p class="hint">${me.user.is_owner ? 'Acceso a todos los hoteles.' : roles}</p>
+    </section>
+    <section class="panel">
+      <h2>Apariencia</h2>
+      <div class="seg" role="group" aria-label="Apariencia">${[['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Oscuro']].map(([k, l]) => `<button type="button" data-theme-pick="${k}" aria-pressed="${LS.get('ch-theme', 'auto') === k}">${l}</button>`).join('')}</div>
+      <p class="hint">Automático sigue el modo claro u oscuro del teléfono.</p>
     </section>
     <section class="panel">
       <h2>Huella o Face ID</h2>
